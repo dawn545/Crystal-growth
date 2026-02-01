@@ -15,3 +15,6 @@ To compile the project, use the following command:
 ```bash
 g++ main.cpp Kobayashi.cpp -I. -lopengl32 -lfreeglut -o main.exe
 
+##Reference
+Kim, Y., & Lin, S. (2003). Visual Simulation of Ice Crystal Growth. Eurographics/SIGGRAPH Symposium on Computer Animation.
+

@@ -2,6 +2,9 @@
 
 This project simulates dendritic crystal growth using the Kobayashi model. It was initially based on the [jklae/CrystalGrowth](https://github.com/jklae/CrystalGrowth) project, which used DXViewer for rendering. I modified it to use FreeGLUT for cross-platform compatibility and improved accessibility.
 
+I hope this simple project will serve as a helpful tutorial for beginners interested in graphics, specifically those exploring ice crystal growth simulations.
+If you have any suggestions or questions, feel free to share!
+
 ## Features
 
 - **Dendritic Crystal Growth Simulation**: Models crystal growth in a 2D grid using the Kobayashi model, incorporating anisotropic material properties and thermal dynamics.

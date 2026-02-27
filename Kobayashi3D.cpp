@@ -45,6 +45,9 @@ void Kobayashi3D::_vectorInit() {
     _epsilonDeriv.assign(vSize, 0.0f);
     _pixelBuffer.assign(vSize * 4, 0);
 
+    // 初始化取向场 (默认为全局统一方向)
+    _orientationField.assign(vSize, 0.0);
+
     _createNucleus(_objectCount.x / 2, _objectCount.y / 2);
     _updateTexture();
 }
@@ -64,36 +67,50 @@ void Kobayashi3D::_createNucleus(int x, int y) {
 void Kobayashi3D::_computeGradientLaplacian() {
     for (int j = 0; j < _objectCount.y; j++) {
         for (int i = 0; i < _objectCount.x; i++) {
+            int idx = _INDEX(i, j);
             int i_plus = (i + 1) % _objectCount.x;
             int i_minus = ((i - 1) + _objectCount.x) % _objectCount.x;
             int j_plus = (j + 1) % _objectCount.y;
             int j_minus = ((j - 1) + _objectCount.y) % _objectCount.y;
 
-            _gradPhiX[_INDEX(i, j)] = (_phi[_INDEX(i_plus, j)] - _phi[_INDEX(i_minus, j)]) / _dx;
-            _gradPhiY[_INDEX(i, j)] = (_phi[_INDEX(i, j_plus)] - _phi[_INDEX(i, j_minus)]) / _dy;
+            // 计算相场梯度（中心差分）
+            _gradPhiX[idx] = (_phi[_INDEX(i_plus, j)] - _phi[_INDEX(i_minus, j)]) / (2.0f * _dx);
+            _gradPhiY[idx] = (_phi[_INDEX(i, j_plus)] - _phi[_INDEX(i, j_minus)]) / (2.0f * _dy);
 
-            _lapPhi[_INDEX(i, j)] = (2.0f * (_phi[_INDEX(i_plus, j)] + _phi[_INDEX(i_minus, j)] + _phi[_INDEX(i, j_plus)] + _phi[_INDEX(i, j_minus)])
+            // 计算拉普拉斯算子
+            _lapPhi[idx] = (2.0f * (_phi[_INDEX(i_plus, j)] + _phi[_INDEX(i_minus, j)] + _phi[_INDEX(i, j_plus)] + _phi[_INDEX(i, j_minus)])
                 + _phi[_INDEX(i_plus, j_plus)] + _phi[_INDEX(i_minus, j_minus)] + _phi[_INDEX(i_minus, j_plus)] + _phi[_INDEX(i_plus, j_minus)]
-                - 12.0f * _phi[_INDEX(i, j)]) / (3.0f * _dx * _dx);
+                - 12.0f * _phi[idx]) / (3.0f * _dx * _dx);
 
-            _lapT[_INDEX(i, j)] = (2.0f * (_t[_INDEX(i_plus, j)] + _t[_INDEX(i_minus, j)] + _t[_INDEX(i, j_plus)] + _t[_INDEX(i, j_minus)])
+            _lapT[idx] = (2.0f * (_t[_INDEX(i_plus, j)] + _t[_INDEX(i_minus, j)] + _t[_INDEX(i, j_plus)] + _t[_INDEX(i, j_minus)])
                 + _t[_INDEX(i_plus, j_plus)] + _t[_INDEX(i_minus, j_minus)] + _t[_INDEX(i_minus, j_plus)] + _t[_INDEX(i_plus, j_minus)]
-                - 12.0f * _t[_INDEX(i, j)]) / (3.0f * _dx * _dx);
+                - 12.0f * _t[idx]) / (3.0f * _dx * _dx);
 
-            if (_gradPhiX[_INDEX(i, j)] <= +FLT_EPSILON && _gradPhiX[_INDEX(i, j)] >= -FLT_EPSILON)
-                if (_gradPhiY[_INDEX(i, j)] < -FLT_EPSILON) _angl[_INDEX(i, j)] = -0.5f * PI_F;
-                else if (_gradPhiY[_INDEX(i, j)] > +FLT_EPSILON) _angl[_INDEX(i, j)] = 0.5f * PI_F;
+            // ========================================
+            // Ren et al. (2018) 取向场耦合
+            // ========================================
 
-            if (_gradPhiX[_INDEX(i, j)] > +FLT_EPSILON)
-                if (_gradPhiY[_INDEX(i, j)] < -FLT_EPSILON) _angl[_INDEX(i, j)] = 2.0f * PI_F + atan(_gradPhiY[_INDEX(i, j)] / _gradPhiX[_INDEX(i, j)]);
-                else if (_gradPhiY[_INDEX(i, j)] > +FLT_EPSILON) _angl[_INDEX(i, j)] = atan(_gradPhiY[_INDEX(i, j)] / _gradPhiX[_INDEX(i, j)]);
+            // 1. 计算界面法向角 θ = atan2(-∂φ/∂y, -∂φ/∂x)
+            float theta = atan2(-_gradPhiY[idx], -_gradPhiX[idx]);
 
-            if (_gradPhiX[_INDEX(i, j)] < -FLT_EPSILON)
-                _angl[_INDEX(i, j)] = PI_F + atan(_gradPhiY[_INDEX(i, j)] / _gradPhiX[_INDEX(i, j)]);
+            // 2. 读取该位置的局部取向 Ω(x,y)
+            double omega = _orientationField[idx];
 
-            // 计算各向异性系数
-            _epsilon[_INDEX(i, j)] = _epsilonBar * (1.0f + _delta * cos(_anisotropy * _angl[_INDEX(i, j)]));
-            _epsilonDeriv[_INDEX(i, j)] = -_epsilonBar * _anisotropy * _delta * sin(_anisotropy * _angl[_INDEX(i, j)]);
+            // 3. 计算相对角度 (θ - Ω)
+            float relativeAngle = theta - static_cast<float>(omega);
+
+            // 4. 修改各向异性函数：σ(θ, Ω) = 1 + δ·cos(j·(θ - Ω))
+            //    其中 j = _anisotropy (对于雪花取 6)
+            float sigma = 1.0f + _delta * cosf(_anisotropy * relativeAngle);
+
+            // 5. 计算 ε = ε̄·σ(θ, Ω)
+            _epsilon[idx] = _epsilonBar * sigma;
+
+            // 6. 计算 ∂ε/∂θ = -ε̄·j·δ·sin(j·(θ - Ω))
+            _epsilonDeriv[idx] = -_epsilonBar * _anisotropy * _delta * sinf(_anisotropy * relativeAngle);
+
+            // 保存角度用于调试（可选）
+            _angl[idx] = theta;
         }
     }
 }
@@ -381,13 +398,134 @@ void Kobayashi3D::rotateCamera(float deltaX, float deltaY) {
     _cameraRotY += deltaX;
     _cameraRotX += deltaY;
 
-    // 限制 X 轴旋转角度
-    if (_cameraRotX > 89.0f) _cameraRotX = 89.0f;
-    if (_cameraRotX < -89.0f) _cameraRotX = -89.0f;
+    // 放宽 X 轴旋转角度限制，允许更大范围的垂直旋转
+    if (_cameraRotX > 85.0f) _cameraRotX = 85.0f;
+    if (_cameraRotX < -85.0f) _cameraRotX = -85.0f;
 }
 
 void Kobayashi3D::zoomCamera(float delta) {
     _cameraDistance += delta;
-    if (_cameraDistance < 1.0f) _cameraDistance = 1.0f;
-    if (_cameraDistance > 10.0f) _cameraDistance = 10.0f;
+    if (_cameraDistance < 0.5f) _cameraDistance = 0.5f;  // 允许更近距离观察
+    if (_cameraDistance > 15.0f) _cameraDistance = 15.0f;  // 允许更远距离观察
+}
+
+// ==========================================
+// 取向场管理 (Ren et al. 2018)
+// ==========================================
+
+void Kobayashi3D::_resetOrientationField() {
+    // 将所有网格点的取向重置为 0（默认主轴向上，即 y 轴正方向）
+    size_t vSize = _objectCount.x * _objectCount.y;
+    _orientationField.assign(vSize, 0.0);
+}
+
+void Kobayashi3D::_applyVortexField(bool clockwise) {
+    // 根据 Ren et al. (2018) Section 4.1 的涡旋场公式
+    // 创建一个旋转的取向场，使晶体沿切向生长
+    // Ω(x,y) = atan2(y - y_c, x - x_c) ± π/2
+    // 这样取向场垂直于径向，形成旋转效果
+
+    const double PI = 3.14159265358979323846;
+
+    // 计算中心点（网格中心）
+    double centerX = _objectCount.x / 2.0;
+    double centerY = _objectCount.y / 2.0;
+
+    for (int j = 0; j < _objectCount.y; j++) {
+        for (int i = 0; i < _objectCount.x; i++) {
+            int idx = _INDEX(i, j);
+
+            // 计算相对于中心的位置
+            double dx = i - centerX;
+            double dy = j - centerY;
+
+            // 计算径向角度
+            double radialAngle = atan2(dy, dx);
+
+            // 加上或减去 π/2 使取向垂直于径向（切向）
+            // clockwise = false: 逆时针旋转 (+π/2)
+            // clockwise = true: 顺时针旋转 (-π/2)
+            double angle = clockwise ? (radialAngle - PI / 2.0) : (radialAngle + PI / 2.0);
+
+            // 归一化到 [0, 2π) 范围
+            while (angle < 0.0) angle += 2.0 * PI;
+            while (angle >= 2.0 * PI) angle -= 2.0 * PI;
+
+            _orientationField[idx] = angle;
+        }
+    }
+}
+
+// ==========================================
+// 交互式笔刷工具 (Ren et al. 2018 Section 4.1 - Guiding)
+// ==========================================
+
+void Kobayashi3D::paintOrientation(int screenX, int screenY, float angle, float radius, float blendFactor) {
+    // screenX, screenY 是屏幕坐标（像素）
+    // 需要转换为网格坐标
+
+    // 假设渲染窗口大小与网格大小成比例
+    // 这里简化处理：直接映射屏幕坐标到网格坐标
+    int gridX = static_cast<int>((float)screenX / 800.0f * _objectCount.x);
+    int gridY = static_cast<int>((float)screenY / 800.0f * _objectCount.y);
+
+    // 翻转 Y 坐标（OpenGL 坐标系与屏幕坐标系 Y 轴相反）
+    gridY = _objectCount.y - 1 - gridY;
+
+    // 边界检查
+    if (gridX < 0 || gridX >= _objectCount.x || gridY < 0 || gridY >= _objectCount.y) {
+        return;
+    }
+
+    // 计算笔刷半径（网格单位）
+    float gridRadius = radius * _objectCount.x / 800.0f;
+    int iRadius = static_cast<int>(gridRadius) + 1;
+
+    // 在笔刷半径内更新取向场
+    for (int dy = -iRadius; dy <= iRadius; dy++) {
+        for (int dx = -iRadius; dx <= iRadius; dx++) {
+            int targetX = gridX + dx;
+            int targetY = gridY + dy;
+
+            // 边界检查
+            if (targetX < 0 || targetX >= _objectCount.x ||
+                targetY < 0 || targetY >= _objectCount.y) {
+                continue;
+            }
+
+            // 计算距离
+            float dist = sqrtf(static_cast<float>(dx * dx + dy * dy));
+
+            // 只影响半径内的点
+            if (dist <= gridRadius) {
+                int idx = _INDEX(targetX, targetY);
+
+                // 计算衰减因子（中心强度高，边缘弱）
+                float falloff = 1.0f - (dist / gridRadius);
+                float effectiveBlend = blendFactor * falloff;
+
+                // 线性插值：新角度与旧角度混合
+                // 注意：角度插值需要处理周期性（0 和 2π 的连续性）
+                double oldAngle = _orientationField[idx];
+                double newAngle = angle;
+
+                // 处理角度差的周期性
+                const double PI = 3.14159265358979323846;
+                double angleDiff = newAngle - oldAngle;
+
+                // 将角度差归一化到 [-π, π] 范围
+                while (angleDiff > PI) angleDiff -= 2.0 * PI;
+                while (angleDiff < -PI) angleDiff += 2.0 * PI;
+
+                // 插值
+                double blendedAngle = oldAngle + angleDiff * effectiveBlend;
+
+                // 归一化到 [0, 2π) 范围
+                while (blendedAngle < 0.0) blendedAngle += 2.0 * PI;
+                while (blendedAngle >= 2.0 * PI) blendedAngle -= 2.0 * PI;
+
+                _orientationField[idx] = blendedAngle;
+            }
+        }
+    }
 }

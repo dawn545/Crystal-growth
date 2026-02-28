@@ -46,14 +46,6 @@ void keyboard(unsigned char key, int x, int y) {
         g_sim->resetOrientationField();
         std::cout << "Orientation Field: Uniform (Omega = 0)" << std::endl;
         break;
-    case '1': // 数字 1 - 应用逆时针涡旋取向场
-        g_sim->applyVortexField(false);
-        std::cout << "Orientation Field: Vortex Counter-Clockwise" << std::endl;
-        break;
-    case '2': // 数字 2 - 应用顺时针涡旋取向场
-        g_sim->applyVortexField(true);
-        std::cout << "Orientation Field: Vortex Clockwise" << std::endl;
-        break;
     case '+': // 增加笔刷大小
     case '=':
         g_brushRadius += 5.0f;
@@ -164,8 +156,8 @@ int main(int argc, char** argv) {
     glHint(GL_LINE_SMOOTH_HINT, GL_NICEST);
     glHint(GL_POLYGON_SMOOTH_HINT, GL_NICEST);
 
-    // 2. 初始化模拟器
-    g_sim = new Kobayashi3D(250, 250, 0.0001f);
+    // 2. 初始化模拟器（暂时用较小的 3D 网格测试）
+    g_sim = new Kobayashi3D(256, 256, 64, 0.0001f);
     g_sim->glInit();
 
     std::cout << "=== 3D Ice Crystal Simulation ===" << std::endl;
@@ -176,8 +168,6 @@ int main(int argc, char** argv) {
     std::cout << " [Space]: Pause/Play simulation" << std::endl;
     std::cout << " [R]: Reset simulation" << std::endl;
     std::cout << " [0]: Uniform orientation field (default)" << std::endl;
-    std::cout << " [1]: Vortex field - Counter-Clockwise" << std::endl;
-    std::cout << " [2]: Vortex field - Clockwise" << std::endl;
     std::cout << " [+/-]: Increase/Decrease brush size" << std::endl;
     std::cout << " [[/]]: Decrease/Increase brush strength" << std::endl;
     std::cout << " [ESC]: Quit" << std::endl;

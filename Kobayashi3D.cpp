@@ -36,64 +36,53 @@ void Kobayashi3D::_initParams() {
 void Kobayashi3D::_vectorInit() {
     size_t vSize = _objectCount.x * _objectCount.y * _objectCount.z;
 
-    // 预分配所有场数组，使用 std::vector<double> 确保内存连续性
+    // 主要场
     _phi.assign(vSize, 0.0);
     _t.assign(vSize, 0.0);
     _orientationField.assign(vSize, 0.0);
 
+    // 辅助场
     _gradPhiX.assign(vSize, 0.0);
     _gradPhiY.assign(vSize, 0.0);
     _gradPhiZ.assign(vSize, 0.0);
     _lapPhi.assign(vSize, 0.0);
     _lapT.assign(vSize, 0.0);
-    _angl.assign(vSize, 0.0);
+    _gradPhiMag.assign(vSize, 0.0);
     _epsilon.assign(vSize, 0.0);
     _epsilonDeriv.assign(vSize, 0.0);
 
-    // 新增 3D 角度计算场
-    _gradPhiMag.assign(vSize, 0.0);
-    _theta.assign(vSize, 0.0);
-    _phi_angle.assign(vSize, 0.0);
-    _tau_field.assign(vSize, 0.0);
-
     _pixelBuffer.assign(_objectCount.x * _objectCount.y * 4, 0);
 
-    // 在 3D 空间中心放置球形种子（调整半径）
+    // 创建初始晶核
     int centerX = _objectCount.x / 2;
     int centerY = _objectCount.y / 2;
     int centerZ = _objectCount.z / 2;
-    float seedRadius = 3.0f;  // 恢复较小的种子
+    float seedRadius = 3.0f;
 
     _createNucleus(centerX, centerY, centerZ, seedRadius);
     _updateTexture();
 }
 
 void Kobayashi3D::_createNucleus(int x, int y, int z, float radius) {
-    // 在 3D 空间中创建球形种子
-    // 公式：如果 sqrt((i-x)^2 + (j-y)^2 + (k-z)^2) < radius，则 η = 1.0
-
+    // 在 3D 空间中创建球形晶核
     int iRadius = static_cast<int>(radius) + 1;
 
     for (int k = z - iRadius; k <= z + iRadius; k++) {
         for (int j = y - iRadius; j <= y + iRadius; j++) {
             for (int i = x - iRadius; i <= x + iRadius; i++) {
-                // 边界检查
                 if (i < 0 || i >= _objectCount.x ||
                     j < 0 || j >= _objectCount.y ||
                     k < 0 || k >= _objectCount.z) {
                     continue;
                 }
 
-                // 计算到中心的距离
                 float dx = static_cast<float>(i - x);
                 float dy = static_cast<float>(j - y);
                 float dz = static_cast<float>(k - z);
                 float dist = sqrtf(dx * dx + dy * dy + dz * dz);
 
-                // 如果在球形半径内，设置相场为 1.0
                 if (dist < radius) {
-                    int idx = IDX(i, j, k);
-                    _phi[idx] = 1.0;
+                    _phi[IDX(i, j, k)] = 1.0;
                 }
             }
         }
@@ -105,7 +94,7 @@ void Kobayashi3D::_createNucleus(int x, int y, int z, float radius) {
 // ==========================================
 
 void Kobayashi3D::_computeGradientLaplacian() {
-    // 在中间 z 切片计算（确保 2D 效果正常）
+    // 在中间 z 切片计算（2D 模拟）
     const double EPSILON_GRAD = 1e-10;
     int sliceZ = _objectCount.z / 2;
 
@@ -113,38 +102,20 @@ void Kobayashi3D::_computeGradientLaplacian() {
         for (int i = 0; i < _objectCount.x; i++) {
             int idx = IDX(i, j, sliceZ);
 
-            // 使用 clamp 边界处理
             int i_plus = clampX(i + 1);
             int i_minus = clampX(i - 1);
             int j_plus = clampY(j + 1);
             int j_minus = clampY(j - 1);
-            int k_plus = clampZ(sliceZ + 1);
-            int k_minus = clampZ(sliceZ - 1);
 
-            // 计算 3D 梯度
+            // 计算梯度
             _gradPhiX[idx] = (_phi[IDX(i_plus, j, sliceZ)] - _phi[IDX(i_minus, j, sliceZ)]) / (2.0 * _dx);
             _gradPhiY[idx] = (_phi[IDX(i, j_plus, sliceZ)] - _phi[IDX(i, j_minus, sliceZ)]) / (2.0 * _dy);
-            _gradPhiZ[idx] = (_phi[IDX(i, j, k_plus)] - _phi[IDX(i, j, k_minus)]) / (2.0 * _dz);
 
             double gx = _gradPhiX[idx];
             double gy = _gradPhiY[idx];
-            double gz = _gradPhiZ[idx];
+            _gradPhiMag[idx] = sqrt(gx * gx + gy * gy);
 
-            _gradPhiMag[idx] = sqrt(gx * gx + gy * gy + gz * gz);
-            _tau_field[idx] = sqrt(gx * gx + gy * gy);
-
-            // 计算球面坐标角度
-            if (_gradPhiMag[idx] > EPSILON_GRAD) {
-                double cos_theta = gz / _gradPhiMag[idx];
-                cos_theta = (cos_theta > 1.0) ? 1.0 : ((cos_theta < -1.0) ? -1.0 : cos_theta);
-                _theta[idx] = -acos(cos_theta);
-                _phi_angle[idx] = -atan2(gy, gx);
-            } else {
-                _theta[idx] = 0.0;
-                _phi_angle[idx] = 0.0;
-            }
-
-            // 计算拉普拉斯算子（使用 2D 9点模板以保持原有效果）
+            // 计算拉普拉斯（9点模板）
             _lapPhi[idx] = (2.0 * (_phi[IDX(i_plus, j, sliceZ)] + _phi[IDX(i_minus, j, sliceZ)] +
                                    _phi[IDX(i, j_plus, sliceZ)] + _phi[IDX(i, j_minus, sliceZ)])
                 + _phi[IDX(i_plus, j_plus, sliceZ)] + _phi[IDX(i_minus, j_minus, sliceZ)] +
@@ -157,27 +128,24 @@ void Kobayashi3D::_computeGradientLaplacian() {
                   _t[IDX(i_minus, j_plus, sliceZ)] + _t[IDX(i_plus, j_minus, sliceZ)]
                 - 12.0 * _t[idx]) / (3.0 * _dx * _dx);
 
-            // 各向异性计算
-            double theta_2d = atan2(-gy, -gx);
+            // 各向异性
+            double theta = atan2(-gy, -gx);
             double omega = _orientationField[idx];
-            double relativeAngle = theta_2d - omega;
+            double relativeAngle = theta - omega;
 
             double sigma = 1.0 + _delta * cos(_anisotropy * relativeAngle);
             _epsilon[idx] = _epsilonBar * sigma;
             _epsilonDeriv[idx] = -_epsilonBar * _anisotropy * _delta * sin(_anisotropy * relativeAngle);
-
-            _angl[idx] = theta_2d;
         }
     }
 }
 
 void Kobayashi3D::_evolution() {
-    // 完整 3D 演化（暂时在中间 z 切片进行，后续可扩展到全 3D）
+    // 2D 相场演化（在中间 z 切片）
     int sliceZ = _objectCount.z / 2;
 
     for (int j = 0; j < _objectCount.y; j++) {
         for (int i = 0; i < _objectCount.x; i++) {
-            // 使用 clamp 边界处理
             int i_plus = clampX(i + 1);
             int i_minus = clampX(i - 1);
             int j_plus = clampY(j + 1);
@@ -473,7 +441,7 @@ void Kobayashi3D::zoomCamera(float delta) {
 // ==========================================
 
 void Kobayashi3D::_resetOrientationField() {
-    // 将所有网格点的取向重置为 0（默认主轴向上）
+    // 重置取向场为 0
     size_t vSize = _objectCount.x * _objectCount.y * _objectCount.z;
     _orientationField.assign(vSize, 0.0);
 }

@@ -5,10 +5,12 @@
 // 构造函数与初始化
 // ==========================================
 
-Kobayashi3D::Kobayashi3D(int x, int y, float timeStep) {
-    _objectCount = { x, y };
+Kobayashi3D::Kobayashi3D(int x, int y, int z, float timeStep) {
+    _objectCount = { x, y, z };
+    // 恢复原始网格间距
     _dx = 0.03f;
     _dy = 0.03f;
+    _dz = 0.03f;
     _dt = timeStep;
 
     _initParams();
@@ -32,32 +34,70 @@ void Kobayashi3D::_initParams() {
 }
 
 void Kobayashi3D::_vectorInit() {
-    size_t vSize = _objectCount.x * _objectCount.y;
+    size_t vSize = _objectCount.x * _objectCount.y * _objectCount.z;
 
-    _phi.assign(vSize, 0.0f);
-    _t.assign(vSize, 0.0f);
-    _gradPhiX.assign(vSize, 0.0f);
-    _gradPhiY.assign(vSize, 0.0f);
-    _lapPhi.assign(vSize, 0.0f);
-    _lapT.assign(vSize, 0.0f);
-    _angl.assign(vSize, 0.0f);
-    _epsilon.assign(vSize, 0.0f);
-    _epsilonDeriv.assign(vSize, 0.0f);
-    _pixelBuffer.assign(vSize * 4, 0);
-
-    // 初始化取向场 (默认为全局统一方向)
+    // 预分配所有场数组，使用 std::vector<double> 确保内存连续性
+    _phi.assign(vSize, 0.0);
+    _t.assign(vSize, 0.0);
     _orientationField.assign(vSize, 0.0);
 
-    _createNucleus(_objectCount.x / 2, _objectCount.y / 2);
+    _gradPhiX.assign(vSize, 0.0);
+    _gradPhiY.assign(vSize, 0.0);
+    _gradPhiZ.assign(vSize, 0.0);
+    _lapPhi.assign(vSize, 0.0);
+    _lapT.assign(vSize, 0.0);
+    _angl.assign(vSize, 0.0);
+    _epsilon.assign(vSize, 0.0);
+    _epsilonDeriv.assign(vSize, 0.0);
+
+    // 新增 3D 角度计算场
+    _gradPhiMag.assign(vSize, 0.0);
+    _theta.assign(vSize, 0.0);
+    _phi_angle.assign(vSize, 0.0);
+    _tau_field.assign(vSize, 0.0);
+
+    _pixelBuffer.assign(_objectCount.x * _objectCount.y * 4, 0);
+
+    // 在 3D 空间中心放置球形种子（调整半径）
+    int centerX = _objectCount.x / 2;
+    int centerY = _objectCount.y / 2;
+    int centerZ = _objectCount.z / 2;
+    float seedRadius = 3.0f;  // 恢复较小的种子
+
+    _createNucleus(centerX, centerY, centerZ, seedRadius);
     _updateTexture();
 }
 
-void Kobayashi3D::_createNucleus(int x, int y) {
-    _phi[_INDEX(x, y)] = 1.0f;
-    _phi[_INDEX(x - 1, y)] = 1.0f;
-    _phi[_INDEX(x + 1, y)] = 1.0f;
-    _phi[_INDEX(x, y - 1)] = 1.0f;
-    _phi[_INDEX(x, y + 1)] = 1.0f;
+void Kobayashi3D::_createNucleus(int x, int y, int z, float radius) {
+    // 在 3D 空间中创建球形种子
+    // 公式：如果 sqrt((i-x)^2 + (j-y)^2 + (k-z)^2) < radius，则 η = 1.0
+
+    int iRadius = static_cast<int>(radius) + 1;
+
+    for (int k = z - iRadius; k <= z + iRadius; k++) {
+        for (int j = y - iRadius; j <= y + iRadius; j++) {
+            for (int i = x - iRadius; i <= x + iRadius; i++) {
+                // 边界检查
+                if (i < 0 || i >= _objectCount.x ||
+                    j < 0 || j >= _objectCount.y ||
+                    k < 0 || k >= _objectCount.z) {
+                    continue;
+                }
+
+                // 计算到中心的距离
+                float dx = static_cast<float>(i - x);
+                float dy = static_cast<float>(j - y);
+                float dz = static_cast<float>(k - z);
+                float dist = sqrtf(dx * dx + dy * dy + dz * dz);
+
+                // 如果在球形半径内，设置相场为 1.0
+                if (dist < radius) {
+                    int idx = IDX(i, j, k);
+                    _phi[idx] = 1.0;
+                }
+            }
+        }
+    }
 }
 
 // ==========================================
@@ -65,84 +105,107 @@ void Kobayashi3D::_createNucleus(int x, int y) {
 // ==========================================
 
 void Kobayashi3D::_computeGradientLaplacian() {
+    // 在中间 z 切片计算（确保 2D 效果正常）
+    const double EPSILON_GRAD = 1e-10;
+    int sliceZ = _objectCount.z / 2;
+
     for (int j = 0; j < _objectCount.y; j++) {
         for (int i = 0; i < _objectCount.x; i++) {
-            int idx = _INDEX(i, j);
-            int i_plus = (i + 1) % _objectCount.x;
-            int i_minus = ((i - 1) + _objectCount.x) % _objectCount.x;
-            int j_plus = (j + 1) % _objectCount.y;
-            int j_minus = ((j - 1) + _objectCount.y) % _objectCount.y;
+            int idx = IDX(i, j, sliceZ);
 
-            // 计算相场梯度（中心差分）
-            _gradPhiX[idx] = (_phi[_INDEX(i_plus, j)] - _phi[_INDEX(i_minus, j)]) / (2.0f * _dx);
-            _gradPhiY[idx] = (_phi[_INDEX(i, j_plus)] - _phi[_INDEX(i, j_minus)]) / (2.0f * _dy);
+            // 使用 clamp 边界处理
+            int i_plus = clampX(i + 1);
+            int i_minus = clampX(i - 1);
+            int j_plus = clampY(j + 1);
+            int j_minus = clampY(j - 1);
+            int k_plus = clampZ(sliceZ + 1);
+            int k_minus = clampZ(sliceZ - 1);
 
-            // 计算拉普拉斯算子
-            _lapPhi[idx] = (2.0f * (_phi[_INDEX(i_plus, j)] + _phi[_INDEX(i_minus, j)] + _phi[_INDEX(i, j_plus)] + _phi[_INDEX(i, j_minus)])
-                + _phi[_INDEX(i_plus, j_plus)] + _phi[_INDEX(i_minus, j_minus)] + _phi[_INDEX(i_minus, j_plus)] + _phi[_INDEX(i_plus, j_minus)]
-                - 12.0f * _phi[idx]) / (3.0f * _dx * _dx);
+            // 计算 3D 梯度
+            _gradPhiX[idx] = (_phi[IDX(i_plus, j, sliceZ)] - _phi[IDX(i_minus, j, sliceZ)]) / (2.0 * _dx);
+            _gradPhiY[idx] = (_phi[IDX(i, j_plus, sliceZ)] - _phi[IDX(i, j_minus, sliceZ)]) / (2.0 * _dy);
+            _gradPhiZ[idx] = (_phi[IDX(i, j, k_plus)] - _phi[IDX(i, j, k_minus)]) / (2.0 * _dz);
 
-            _lapT[idx] = (2.0f * (_t[_INDEX(i_plus, j)] + _t[_INDEX(i_minus, j)] + _t[_INDEX(i, j_plus)] + _t[_INDEX(i, j_minus)])
-                + _t[_INDEX(i_plus, j_plus)] + _t[_INDEX(i_minus, j_minus)] + _t[_INDEX(i_minus, j_plus)] + _t[_INDEX(i_plus, j_minus)]
-                - 12.0f * _t[idx]) / (3.0f * _dx * _dx);
+            double gx = _gradPhiX[idx];
+            double gy = _gradPhiY[idx];
+            double gz = _gradPhiZ[idx];
 
-            // ========================================
-            // Ren et al. (2018) 取向场耦合
-            // ========================================
+            _gradPhiMag[idx] = sqrt(gx * gx + gy * gy + gz * gz);
+            _tau_field[idx] = sqrt(gx * gx + gy * gy);
 
-            // 1. 计算界面法向角 θ = atan2(-∂φ/∂y, -∂φ/∂x)
-            float theta = atan2(-_gradPhiY[idx], -_gradPhiX[idx]);
+            // 计算球面坐标角度
+            if (_gradPhiMag[idx] > EPSILON_GRAD) {
+                double cos_theta = gz / _gradPhiMag[idx];
+                cos_theta = (cos_theta > 1.0) ? 1.0 : ((cos_theta < -1.0) ? -1.0 : cos_theta);
+                _theta[idx] = -acos(cos_theta);
+                _phi_angle[idx] = -atan2(gy, gx);
+            } else {
+                _theta[idx] = 0.0;
+                _phi_angle[idx] = 0.0;
+            }
 
-            // 2. 读取该位置的局部取向 Ω(x,y)
+            // 计算拉普拉斯算子（使用 2D 9点模板以保持原有效果）
+            _lapPhi[idx] = (2.0 * (_phi[IDX(i_plus, j, sliceZ)] + _phi[IDX(i_minus, j, sliceZ)] +
+                                   _phi[IDX(i, j_plus, sliceZ)] + _phi[IDX(i, j_minus, sliceZ)])
+                + _phi[IDX(i_plus, j_plus, sliceZ)] + _phi[IDX(i_minus, j_minus, sliceZ)] +
+                  _phi[IDX(i_minus, j_plus, sliceZ)] + _phi[IDX(i_plus, j_minus, sliceZ)]
+                - 12.0 * _phi[idx]) / (3.0 * _dx * _dx);
+
+            _lapT[idx] = (2.0 * (_t[IDX(i_plus, j, sliceZ)] + _t[IDX(i_minus, j, sliceZ)] +
+                                 _t[IDX(i, j_plus, sliceZ)] + _t[IDX(i, j_minus, sliceZ)])
+                + _t[IDX(i_plus, j_plus, sliceZ)] + _t[IDX(i_minus, j_minus, sliceZ)] +
+                  _t[IDX(i_minus, j_plus, sliceZ)] + _t[IDX(i_plus, j_minus, sliceZ)]
+                - 12.0 * _t[idx]) / (3.0 * _dx * _dx);
+
+            // 各向异性计算
+            double theta_2d = atan2(-gy, -gx);
             double omega = _orientationField[idx];
+            double relativeAngle = theta_2d - omega;
 
-            // 3. 计算相对角度 (θ - Ω)
-            float relativeAngle = theta - static_cast<float>(omega);
-
-            // 4. 修改各向异性函数：σ(θ, Ω) = 1 + δ·cos(j·(θ - Ω))
-            //    其中 j = _anisotropy (对于雪花取 6)
-            float sigma = 1.0f + _delta * cosf(_anisotropy * relativeAngle);
-
-            // 5. 计算 ε = ε̄·σ(θ, Ω)
+            double sigma = 1.0 + _delta * cos(_anisotropy * relativeAngle);
             _epsilon[idx] = _epsilonBar * sigma;
+            _epsilonDeriv[idx] = -_epsilonBar * _anisotropy * _delta * sin(_anisotropy * relativeAngle);
 
-            // 6. 计算 ∂ε/∂θ = -ε̄·j·δ·sin(j·(θ - Ω))
-            _epsilonDeriv[idx] = -_epsilonBar * _anisotropy * _delta * sinf(_anisotropy * relativeAngle);
-
-            // 保存角度用于调试（可选）
-            _angl[idx] = theta;
+            _angl[idx] = theta_2d;
         }
     }
 }
 
 void Kobayashi3D::_evolution() {
+    // 完整 3D 演化（暂时在中间 z 切片进行，后续可扩展到全 3D）
+    int sliceZ = _objectCount.z / 2;
+
     for (int j = 0; j < _objectCount.y; j++) {
         for (int i = 0; i < _objectCount.x; i++) {
-            int i_plus = (i + 1) % _objectCount.x;
-            int i_minus = ((i - 1) + _objectCount.x) % _objectCount.x;
-            int j_plus = (j + 1) % _objectCount.y;
-            int j_minus = ((j - 1) + _objectCount.y) % _objectCount.y;
+            // 使用 clamp 边界处理
+            int i_plus = clampX(i + 1);
+            int i_minus = clampX(i - 1);
+            int j_plus = clampY(j + 1);
+            int j_minus = clampY(j - 1);
 
-            float gradEpsPowX = (_epsilon[_INDEX(i_plus, j)] * _epsilon[_INDEX(i_plus, j)] - _epsilon[_INDEX(i_minus, j)] * _epsilon[_INDEX(i_minus, j)]) / _dx;
-            float gradEpsPowY = (_epsilon[_INDEX(i, j_plus)] * _epsilon[_INDEX(i, j_plus)] - _epsilon[_INDEX(i, j_minus)] * _epsilon[_INDEX(i, j_minus)]) / _dy;
+            double gradEpsPowX = (_epsilon[IDX(i_plus, j, sliceZ)] * _epsilon[IDX(i_plus, j, sliceZ)] -
+                                  _epsilon[IDX(i_minus, j, sliceZ)] * _epsilon[IDX(i_minus, j, sliceZ)]) / (2.0 * _dx);
+            double gradEpsPowY = (_epsilon[IDX(i, j_plus, sliceZ)] * _epsilon[IDX(i, j_plus, sliceZ)] -
+                                  _epsilon[IDX(i, j_minus, sliceZ)] * _epsilon[IDX(i, j_minus, sliceZ)]) / (2.0 * _dy);
 
-            float term1 = (_epsilon[_INDEX(i, j_plus)] * _epsilonDeriv[_INDEX(i, j_plus)] * _gradPhiX[_INDEX(i, j_plus)]
-                - _epsilon[_INDEX(i, j_minus)] * _epsilonDeriv[_INDEX(i, j_minus)] * _gradPhiX[_INDEX(i, j_minus)]) / _dy;
+            double term1 = (_epsilon[IDX(i, j_plus, sliceZ)] * _epsilonDeriv[IDX(i, j_plus, sliceZ)] * _gradPhiX[IDX(i, j_plus, sliceZ)]
+                - _epsilon[IDX(i, j_minus, sliceZ)] * _epsilonDeriv[IDX(i, j_minus, sliceZ)] * _gradPhiX[IDX(i, j_minus, sliceZ)]) / (2.0 * _dy);
 
-            float term2 = -(_epsilon[_INDEX(i_plus, j)] * _epsilonDeriv[_INDEX(i_plus, j)] * _gradPhiY[_INDEX(i_plus, j)]
-                - _epsilon[_INDEX(i_minus, j)] * _epsilonDeriv[_INDEX(i_minus, j)] * _gradPhiY[_INDEX(i_minus, j)]) / _dx;
+            double term2 = -(_epsilon[IDX(i_plus, j, sliceZ)] * _epsilonDeriv[IDX(i_plus, j, sliceZ)] * _gradPhiY[IDX(i_plus, j, sliceZ)]
+                - _epsilon[IDX(i_minus, j, sliceZ)] * _epsilonDeriv[IDX(i_minus, j, sliceZ)] * _gradPhiY[IDX(i_minus, j, sliceZ)]) / (2.0 * _dx);
 
-            float term3 = gradEpsPowX * _gradPhiX[_INDEX(i, j)] + gradEpsPowY * _gradPhiY[_INDEX(i, j)];
-            float m = _alpha / PI_F * atan(_gamma * (_tEq - _t[_INDEX(i, j)]));
+            int idx = IDX(i, j, sliceZ);
+            double term3 = gradEpsPowX * _gradPhiX[idx] + gradEpsPowY * _gradPhiY[idx];
+            double m = _alpha / PI_F * atan(_gamma * (_tEq - _t[idx]));
 
-            float oldPhi = _phi[_INDEX(i, j)];
-            float oldT = _t[_INDEX(i, j)];
+            double oldPhi = _phi[idx];
+            double oldT = _t[idx];
 
-            _phi[_INDEX(i, j)] = _phi[_INDEX(i, j)] +
-                (term1 + term2 + _epsilon[_INDEX(i, j)] * _epsilon[_INDEX(i, j)] * _lapPhi[_INDEX(i, j)] + term3
-                    + oldPhi * (1.0f - oldPhi) * (oldPhi - 0.5f + m)) * _dt / _tau;
+            _phi[idx] = _phi[idx] +
+                (term1 + term2 + _epsilon[idx] * _epsilon[idx] * _lapPhi[idx] + term3
+                    + oldPhi * (1.0 - oldPhi) * (oldPhi - 0.5 + m)) * _dt / _tau;
 
-            _t[_INDEX(i, j)] = oldT + _lapT[_INDEX(i, j)] * _dt + _K * (_phi[_INDEX(i, j)] - oldPhi);
+            _t[idx] = oldT + _lapT[idx] * _dt + _K * (_phi[idx] - oldPhi);
         }
     }
 }
@@ -221,43 +284,49 @@ void Kobayashi3D::_updateTexture() {
     float c1Boundary = 0.9f;
     float c2Boundary = 0.99f;
 
-    size_t size = _phi.size();
+    // 提取中间 z 切片用于 2D 纹理可视化
+    int sliceZ = _objectCount.z / 2;
 
-    for (size_t k = 0; k < size; k++) {
-        float phi = _phi[k];
-        float3 color;
-        float ratio;
+    for (int j = 0; j < _objectCount.y; j++) {
+        for (int i = 0; i < _objectCount.x; i++) {
+            int idx3D = IDX(i, j, sliceZ);
+            int idx2D = j * _objectCount.x + i;
 
-        if (phi <= c1Boundary) {
-            ratio = phi * (1.0f / c1Boundary);
-            color.x = c0.x * (1.0f - ratio) + c1.x * ratio;
-            color.y = c0.y * (1.0f - ratio) + c1.y * ratio;
-            color.z = c0.z * (1.0f - ratio) + c1.z * ratio;
+            float phi = static_cast<float>(_phi[idx3D]);
+            float3 color;
+            float ratio;
+
+            if (phi <= c1Boundary) {
+                ratio = phi * (1.0f / c1Boundary);
+                color.x = c0.x * (1.0f - ratio) + c1.x * ratio;
+                color.y = c0.y * (1.0f - ratio) + c1.y * ratio;
+                color.z = c0.z * (1.0f - ratio) + c1.z * ratio;
+            }
+            else if (phi > c1Boundary && phi <= c2Boundary) {
+                ratio = (phi - c1Boundary) * (1.0f / (c2Boundary - c1Boundary));
+                color.x = c1.x * (1.0f - ratio) + c2.x * ratio;
+                color.y = c1.y * (1.0f - ratio) + c2.y * ratio;
+                color.z = c1.z * (1.0f - ratio) + c2.z * ratio;
+            }
+            else {
+                float c3Boundary = 1.0f;
+                ratio = (phi - c2Boundary) * (1.0f / (c3Boundary - c2Boundary));
+                color.x = c2.x * (1.0f - ratio) + c3.x * ratio;
+                color.y = c2.y * (1.0f - ratio) + c3.y * ratio;
+                color.z = c2.z * (1.0f - ratio) + c3.z * ratio;
+            }
+
+            auto toByte = [](float v) -> unsigned char {
+                if (v < 0.0f) return 0;
+                if (v > 1.0f) return 255;
+                return static_cast<unsigned char>(v * 255.0f);
+            };
+
+            _pixelBuffer[idx2D * 4 + 0] = toByte(color.x);
+            _pixelBuffer[idx2D * 4 + 1] = toByte(color.y);
+            _pixelBuffer[idx2D * 4 + 2] = toByte(color.z);
+            _pixelBuffer[idx2D * 4 + 3] = 255;
         }
-        else if (phi > c1Boundary && phi <= c2Boundary) {
-            ratio = (phi - c1Boundary) * (1.0f / (c2Boundary - c1Boundary));
-            color.x = c1.x * (1.0f - ratio) + c2.x * ratio;
-            color.y = c1.y * (1.0f - ratio) + c2.y * ratio;
-            color.z = c1.z * (1.0f - ratio) + c2.z * ratio;
-        }
-        else {
-            float c3Boundary = 1.0f;
-            ratio = (phi - c2Boundary) * (1.0f / (c3Boundary - c2Boundary));
-            color.x = c2.x * (1.0f - ratio) + c3.x * ratio;
-            color.y = c2.y * (1.0f - ratio) + c3.y * ratio;
-            color.z = c2.z * (1.0f - ratio) + c3.z * ratio;
-        }
-
-        auto toByte = [](float v) -> unsigned char {
-            if (v < 0.0f) return 0;
-            if (v > 1.0f) return 255;
-            return static_cast<unsigned char>(v * 255.0f);
-        };
-
-        _pixelBuffer[k * 4 + 0] = toByte(color.x);
-        _pixelBuffer[k * 4 + 1] = toByte(color.y);
-        _pixelBuffer[k * 4 + 2] = toByte(color.z);
-        _pixelBuffer[k * 4 + 3] = 255;
     }
 
     glBindTexture(GL_TEXTURE_2D, _textureID);
@@ -272,32 +341,29 @@ void Kobayashi3D::_render3DCrystal() {
     glEnable(GL_LIGHTING);
     glDisable(GL_TEXTURE_2D);
 
-    // 绘制每个网格单元为立方体
+    // 渲染中间 z 切片（2D 可视化兼容）
+    int sliceZ = _objectCount.z / 2;
+
     for (int j = 0; j < _objectCount.y - 1; j++) {
         for (int i = 0; i < _objectCount.x - 1; i++) {
-            int idx = _INDEX(i, j);
-            float phi = _phi[idx];
+            int idx = IDX(i, j, sliceZ);
+            float phi = static_cast<float>(_phi[idx]);
 
-            // 只绘制有晶体的区域
             if (phi < 0.01f) continue;
 
-            // 计算位置
             float x = -1.0f + i * cellWidth;
             float y = -1.0f + j * cellHeight;
-            float z = phi * _crystalThickness;  // 根据相场值确定高度
+            float z = phi * _crystalThickness;
 
-            // 获取颜色
-            int pixelIdx = idx * 4;
+            int idx2D = j * _objectCount.x + i;
+            int pixelIdx = idx2D * 4;
             float r = _pixelBuffer[pixelIdx + 0] / 255.0f;
             float g = _pixelBuffer[pixelIdx + 1] / 255.0f;
             float b = _pixelBuffer[pixelIdx + 2] / 255.0f;
 
-            // 设置材质颜色
             glColor3f(r, g, b);
 
-            // 绘制立方体（顶面）
             glBegin(GL_QUADS);
-            // 顶面
             glNormal3f(0.0f, 0.0f, 1.0f);
             glVertex3f(x, y, z);
             glVertex3f(x + cellWidth, y, z);
@@ -305,34 +371,28 @@ void Kobayashi3D::_render3DCrystal() {
             glVertex3f(x, y + cellHeight, z);
             glEnd();
 
-            // 如果相场值较高，绘制侧面增强立体感
             if (phi > 0.3f) {
-                // 稍微变暗的颜色用于侧面
                 glColor3f(r * 0.7f, g * 0.7f, b * 0.7f);
 
                 glBegin(GL_QUADS);
-                // 前面
                 glNormal3f(0.0f, -1.0f, 0.0f);
                 glVertex3f(x, y, 0.0f);
                 glVertex3f(x + cellWidth, y, 0.0f);
                 glVertex3f(x + cellWidth, y, z);
                 glVertex3f(x, y, z);
 
-                // 右面
                 glNormal3f(1.0f, 0.0f, 0.0f);
                 glVertex3f(x + cellWidth, y, 0.0f);
                 glVertex3f(x + cellWidth, y + cellHeight, 0.0f);
                 glVertex3f(x + cellWidth, y + cellHeight, z);
                 glVertex3f(x + cellWidth, y, z);
 
-                // 后面
                 glNormal3f(0.0f, 1.0f, 0.0f);
                 glVertex3f(x + cellWidth, y + cellHeight, 0.0f);
                 glVertex3f(x, y + cellHeight, 0.0f);
                 glVertex3f(x, y + cellHeight, z);
                 glVertex3f(x + cellWidth, y + cellHeight, z);
 
-                // 左面
                 glNormal3f(-1.0f, 0.0f, 0.0f);
                 glVertex3f(x, y + cellHeight, 0.0f);
                 glVertex3f(x, y, 0.0f);
@@ -343,7 +403,6 @@ void Kobayashi3D::_render3DCrystal() {
         }
     }
 
-    // 绘制底部平面作为参考
     glDisable(GL_LIGHTING);
     glColor4f(0.1f, 0.1f, 0.15f, 0.5f);
     glEnable(GL_BLEND);
@@ -414,46 +473,9 @@ void Kobayashi3D::zoomCamera(float delta) {
 // ==========================================
 
 void Kobayashi3D::_resetOrientationField() {
-    // 将所有网格点的取向重置为 0（默认主轴向上，即 y 轴正方向）
-    size_t vSize = _objectCount.x * _objectCount.y;
+    // 将所有网格点的取向重置为 0（默认主轴向上）
+    size_t vSize = _objectCount.x * _objectCount.y * _objectCount.z;
     _orientationField.assign(vSize, 0.0);
-}
-
-void Kobayashi3D::_applyVortexField(bool clockwise) {
-    // 根据 Ren et al. (2018) Section 4.1 的涡旋场公式
-    // 创建一个旋转的取向场，使晶体沿切向生长
-    // Ω(x,y) = atan2(y - y_c, x - x_c) ± π/2
-    // 这样取向场垂直于径向，形成旋转效果
-
-    const double PI = 3.14159265358979323846;
-
-    // 计算中心点（网格中心）
-    double centerX = _objectCount.x / 2.0;
-    double centerY = _objectCount.y / 2.0;
-
-    for (int j = 0; j < _objectCount.y; j++) {
-        for (int i = 0; i < _objectCount.x; i++) {
-            int idx = _INDEX(i, j);
-
-            // 计算相对于中心的位置
-            double dx = i - centerX;
-            double dy = j - centerY;
-
-            // 计算径向角度
-            double radialAngle = atan2(dy, dx);
-
-            // 加上或减去 π/2 使取向垂直于径向（切向）
-            // clockwise = false: 逆时针旋转 (+π/2)
-            // clockwise = true: 顺时针旋转 (-π/2)
-            double angle = clockwise ? (radialAngle - PI / 2.0) : (radialAngle + PI / 2.0);
-
-            // 归一化到 [0, 2π) 范围
-            while (angle < 0.0) angle += 2.0 * PI;
-            while (angle >= 2.0 * PI) angle -= 2.0 * PI;
-
-            _orientationField[idx] = angle;
-        }
-    }
 }
 
 // ==========================================
@@ -461,66 +483,49 @@ void Kobayashi3D::_applyVortexField(bool clockwise) {
 // ==========================================
 
 void Kobayashi3D::paintOrientation(int screenX, int screenY, float angle, float radius, float blendFactor) {
-    // screenX, screenY 是屏幕坐标（像素）
-    // 需要转换为网格坐标
-
-    // 假设渲染窗口大小与网格大小成比例
-    // 这里简化处理：直接映射屏幕坐标到网格坐标
+    // 在中间 z 切片绘制取向场（兼容 2D 交互）
     int gridX = static_cast<int>((float)screenX / 800.0f * _objectCount.x);
     int gridY = static_cast<int>((float)screenY / 800.0f * _objectCount.y);
+    int sliceZ = _objectCount.z / 2;
 
-    // 翻转 Y 坐标（OpenGL 坐标系与屏幕坐标系 Y 轴相反）
     gridY = _objectCount.y - 1 - gridY;
 
-    // 边界检查
     if (gridX < 0 || gridX >= _objectCount.x || gridY < 0 || gridY >= _objectCount.y) {
         return;
     }
 
-    // 计算笔刷半径（网格单位）
     float gridRadius = radius * _objectCount.x / 800.0f;
     int iRadius = static_cast<int>(gridRadius) + 1;
 
-    // 在笔刷半径内更新取向场
     for (int dy = -iRadius; dy <= iRadius; dy++) {
         for (int dx = -iRadius; dx <= iRadius; dx++) {
             int targetX = gridX + dx;
             int targetY = gridY + dy;
 
-            // 边界检查
             if (targetX < 0 || targetX >= _objectCount.x ||
                 targetY < 0 || targetY >= _objectCount.y) {
                 continue;
             }
 
-            // 计算距离
             float dist = sqrtf(static_cast<float>(dx * dx + dy * dy));
 
-            // 只影响半径内的点
             if (dist <= gridRadius) {
-                int idx = _INDEX(targetX, targetY);
+                int idx = IDX(targetX, targetY, sliceZ);
 
-                // 计算衰减因子（中心强度高，边缘弱）
                 float falloff = 1.0f - (dist / gridRadius);
                 float effectiveBlend = blendFactor * falloff;
 
-                // 线性插值：新角度与旧角度混合
-                // 注意：角度插值需要处理周期性（0 和 2π 的连续性）
                 double oldAngle = _orientationField[idx];
                 double newAngle = angle;
 
-                // 处理角度差的周期性
                 const double PI = 3.14159265358979323846;
                 double angleDiff = newAngle - oldAngle;
 
-                // 将角度差归一化到 [-π, π] 范围
                 while (angleDiff > PI) angleDiff -= 2.0 * PI;
                 while (angleDiff < -PI) angleDiff += 2.0 * PI;
 
-                // 插值
                 double blendedAngle = oldAngle + angleDiff * effectiveBlend;
 
-                // 归一化到 [0, 2π) 范围
                 while (blendedAngle < 0.0) blendedAngle += 2.0 * PI;
                 while (blendedAngle >= 2.0 * PI) blendedAngle -= 2.0 * PI;
 

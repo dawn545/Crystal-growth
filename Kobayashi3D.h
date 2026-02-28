@@ -50,34 +50,28 @@ private:
     float _dx, _dy, _dz, _dt;
     float _tau, _epsilonBar, _mu, _K, _delta, _anisotropy, _alpha, _gamma, _tEq;
 
-    // 3D 场数据：使用一维平铺数组（Flat Array）确保内存连续性
+    // 3D 场数据
     std::vector<double> _phi;              // 相场 η(x,y,z)
     std::vector<double> _t;                // 温度场 T(x,y,z)
-    std::vector<double> _orientationField; // 取向场 Ω(x,y,z) - 单位球上的向量 [θ, φ]
+    std::vector<double> _orientationField; // 取向场 Ω(x,y,z)
 
-    // 辅助计算场
+    // 计算辅助场（仅在中间 z 切片）
     std::vector<double> _epsilon, _epsilonDeriv;
-    std::vector<double> _gradPhiX, _gradPhiY, _gradPhiZ;  // 3D 梯度分量
+    std::vector<double> _gradPhiX, _gradPhiY, _gradPhiZ;
     std::vector<double> _lapPhi, _lapT;
-    std::vector<double> _gradPhiMag;   // |∇η| - 梯度模长
-    std::vector<double> _theta;        // θ = -arccos(∂η/∂z / |∇η|) - 极角
-    std::vector<double> _phi_angle;    // φ = -arctan2(∂η/∂y, ∂η/∂x) - 方位角
-    std::vector<double> _tau_field;    // τ = sqrt((∂η/∂x)² + (∂η/∂y)²) - 辅助算子
-    std::vector<double> _angl;         // 保留用于调试
+    std::vector<double> _gradPhiMag;
 
 
-    // OpenGL 纹理和渲染（用于2D切片可视化）
+    // OpenGL 渲染
     std::vector<unsigned char> _pixelBuffer;
     GLuint _textureID = 0;
     bool _updateFlag = true;
 
-
-    // 3D 相机参数
+    // 相机参数
     float _cameraRotX = 30.0f;
     float _cameraRotY = 45.0f;
     float _cameraDistance = 3.0f;
-    
-    float _crystalThickness = 0.03f;  // 冰晶最大厚度
+    float _crystalThickness = 0.03f;
 
     // 内部方法
     void _initParams();

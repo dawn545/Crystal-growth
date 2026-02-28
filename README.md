@@ -5,6 +5,7 @@ This project simulates dendritic crystal growth using the Kobayashi model. It wa
 I hope this simple project will serve as a helpful tutorial for beginners interested in graphics, specifically those exploring ice crystal growth simulations.
 If you have any suggestions or questions, feel free to share!
 
+crystal.exe is 3d version
 ## Features
 
 - **Dendritic Crystal Growth Simulation**: Models crystal growth in a 2D grid using the Kobayashi model, incorporating anisotropic material properties and thermal dynamics.

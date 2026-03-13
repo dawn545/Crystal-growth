@@ -244,20 +244,24 @@ void Kobayashi::_evolution()
             //   - term1, term2, term3：各向异性系数的贡献
             //   - φ(1-φ)(φ-0.5+m)：双势阱势能项 + 驱动力项
             // 时间积分：使用显式欧拉法 φ_new = φ_old + (∂φ/∂t)·Δt
-            _phi[_INDEX(i, j)] = _phi[_INDEX(i, j)] +
-                (term1 + term2 + _epsilon[_INDEX(i, j)] * _epsilon[_INDEX(i, j)] * _lapPhi[_INDEX(i, j)] + term3
-                    + oldPhi * (1.0f - oldPhi) * (oldPhi - 0.5f + m)) * _dt * M_ori;
+
+            // 先计算 ∂φ/∂t
+            float dPhiDt = (term1 + term2 + _epsilon[_INDEX(i, j)] * _epsilon[_INDEX(i, j)] * _lapPhi[_INDEX(i, j)] + term3
+                    + oldPhi * (1.0f - oldPhi) * (oldPhi - 0.5f + m)) * M_ori;
+
+            // 更新相场
+            _phi[_INDEX(i, j)] = oldPhi + dPhiDt * _dt;
 
             // ========== 核心更新公式 2：热传导方程 + 潜热释放 ==========
             // 这个方程描述温度场如何随时间变化
             // 公式：∂T/∂t = a²·∇²T + K·∂φ/∂t
             // 其中：
             //   - a²·∇²T：热扩散项（温度向周围扩散，a² 是热扩散系数）
-            //   - K·∂φ/∂t：潜热释放项（相变速率）
+            //   - K·∂φ/∂t：潜热释放项（相变速率，注意这里用的是 ∂φ/∂t 而不是 Δφ）
             // 物理意义：当液体凝固成固体时（φ 从 0 变为 1），会释放潜热，加热周围
             //          这个热量会减缓进一步的晶体生长（自我调节机制）
             // 时间积分：使用显式欧拉法 T_new = T_old + (∂T/∂t)·Δt
-            _t[_INDEX(i, j)] = oldT + _alpha_T * _lapT[_INDEX(i, j)] * _dt + _K * (_phi[_INDEX(i, j)] - oldPhi);
+            _t[_INDEX(i, j)] = oldT + (_alpha_T * _lapT[_INDEX(i, j)] + _K * dPhiDt) * _dt;
         }
     }
 }

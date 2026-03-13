@@ -32,7 +32,7 @@ void Kobayashi::_initParams() {
     // 用于各向异性系数的基础值：ε(θ) = ε̄(1 + δcos(nθ))
     _epsilonBar = 0.010f;
 
-    M_ori = 1.0f;           // 界面迁移率系数
+    M_ori = 1/_tau;           // 界面迁移率系数
 
     // 潜热系数 K，控制温度场对相变的影响（单位：无量纲）
     // 物理意义：相变释放的潜热量，影响周围温度场
@@ -233,7 +233,7 @@ void Kobayashi::_evolution()
 
             // ========== 核心更新公式 1：相场演化方程 (Allen-Cahn Equation) ==========
             // 这是一个非线性偏微分方程，描述相场随时间的变化
-            // 公式：∂φ/∂t = (1/τ)[ε²∇²φ + term1 + term2 + term3 + φ(1-φ)(φ-0.5+m)]
+            // 公式：∂φ/∂t = M_ori*[ε²∇²φ + term1 + term2 + term3 + φ(1-φ)(φ-0.5+m)]
             // 其中：
             //   - ε²∇²φ：各向异性界面能的扩散项
             //   - term1, term2, term3：各向异性系数的贡献
@@ -241,7 +241,7 @@ void Kobayashi::_evolution()
             // 时间积分：使用显式欧拉法 φ_new = φ_old + (∂φ/∂t)·Δt
             _phi[_INDEX(i, j)] = _phi[_INDEX(i, j)] +
                 (term1 + term2 + _epsilon[_INDEX(i, j)] * _epsilon[_INDEX(i, j)] * _lapPhi[_INDEX(i, j)] + term3
-                    + oldPhi * (1.0f - oldPhi) * (oldPhi - 0.5f + m)) * _dt / _tau;
+                    + oldPhi * (1.0f - oldPhi) * (oldPhi - 0.5f + m)) * _dt * M_ori;
 
             // ========== 核心更新公式 2：热传导方程 + 潜热释放 ==========
             // 这个方程描述温度场如何随时间变化

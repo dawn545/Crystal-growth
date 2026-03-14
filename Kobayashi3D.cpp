@@ -2,6 +2,89 @@
 #include <cfloat> // 包含 FLT_EPSILON，用于浮点数比较，防止除以零
 
 // ==========================================
+// Rodrigues旋转公式辅助函数
+// ==========================================
+
+// 计算叉积：k = u_ori × u0，其中 u0 = (0, 0, 1)
+inline void crossProduct(float u_ori_x, float u_ori_y, float u_ori_z,
+                         float& k_x, float& k_y, float& k_z) {
+    // u0 = (0, 0, 1)
+    // k = u_ori × u0 = (u_ori_y, -u_ori_x, 0)
+    k_x = u_ori_y;
+    k_y = -u_ori_x;
+    k_z = 0.0f;
+}
+
+// 计算反对称矩阵 K 与向量 u 的乘积：K·u
+inline void skewSymmetricProduct(float k_x, float k_y, float k_z,
+                                 float u_x, float u_y, float u_z,
+                                 float& result_x, float& result_y, float& result_z) {
+    // K = [  0  -k_z  k_y ]
+    //     [ k_z   0  -k_x ]
+    //     [-k_y  k_x   0  ]
+    // K·u = (-k_z*u_y + k_y*u_z, k_z*u_x - k_x*u_z, -k_y*u_x + k_x*u_y)
+    result_x = -k_z * u_y + k_y * u_z;
+    result_y = k_z * u_x - k_x * u_z;
+    result_z = -k_y * u_x + k_x * u_y;
+}
+
+// 计算 K² 与向量 u 的乘积
+inline void skewSymmetricSquaredProduct(float k_x, float k_y, float k_z,
+                                        float u_x, float u_y, float u_z,
+                                        float& result_x, float& result_y, float& result_z) {
+    // K² = -k·k^T + k×k (对于反对称矩阵)
+    // 实际上：K²·u = (k·u)k - |k|²u
+    float k_dot_u = k_x * u_x + k_y * u_y + k_z * u_z;
+    float k_mag_sq = k_x * k_x + k_y * k_y + k_z * k_z;
+
+    result_x = k_dot_u * k_x - k_mag_sq * u_x;
+    result_y = k_dot_u * k_y - k_mag_sq * u_y;
+    result_z = k_dot_u * k_z - k_mag_sq * u_z;
+}
+
+// Rodrigues旋转公式：n_rot = (I + sinΘ·K + (1-cosΘ)·K²)·n
+// 其中 k = u_ori × u0，Θ = θ_ori
+inline void rodriguesRotation(float u_x, float u_y, float u_z,
+                              float u_ori_x, float u_ori_y, float u_ori_z,
+                              float theta_ori,
+                              float& u_rot_x, float& u_rot_y, float& u_rot_z) {
+    // 计算 k = u_ori × u0
+    float k_x, k_y, k_z;
+    crossProduct(u_ori_x, u_ori_y, u_ori_z, k_x, k_y, k_z);
+
+    // 归一化 k
+    float k_mag = sqrt(k_x * k_x + k_y * k_y + k_z * k_z);
+    if (k_mag < FLT_EPSILON) {
+        // u_ori 已经指向 z 轴，无需旋转
+        u_rot_x = u_x;
+        u_rot_y = u_y;
+        u_rot_z = u_z;
+        return;
+    }
+    k_x /= k_mag;
+    k_y /= k_mag;
+    k_z /= k_mag;
+
+    // 计算旋转角度 Θ = θ_ori
+    float sin_theta_ori = sin(theta_ori);
+    float cos_theta_ori = cos(theta_ori);
+    float one_minus_cos = 1.0f - cos_theta_ori;
+
+    // 计算 K·u
+    float Ku_x, Ku_y, Ku_z;
+    skewSymmetricProduct(k_x, k_y, k_z, u_x, u_y, u_z, Ku_x, Ku_y, Ku_z);
+
+    // 计算 K²·u
+    float K2u_x, K2u_y, K2u_z;
+    skewSymmetricSquaredProduct(k_x, k_y, k_z, u_x, u_y, u_z, K2u_x, K2u_y, K2u_z);
+
+    // n_rot = u + sinΘ·K·u + (1-cosΘ)·K²·u
+    u_rot_x = u_x + sin_theta_ori * Ku_x + one_minus_cos * K2u_x;
+    u_rot_y = u_y + sin_theta_ori * Ku_y + one_minus_cos * K2u_y;
+    u_rot_z = u_z + sin_theta_ori * Ku_z + one_minus_cos * K2u_z;
+}
+
+// ==========================================
 // 构造函数与初始化
 // ==========================================
 
@@ -78,6 +161,12 @@ void Kobayashi::_initParams() {
     // 取向场迁移率 M_ori，控制取向场演化的速度
     // 物理意义：值越大，取向场调整越快
     M_ori = 1.0f;
+
+    // 公式(19)中的各向异性系数
+    // ε_o(n) = c1 + c2(sin⁴θ̃(sin⁴φ̃ + cos⁴φ̃) + cos⁴θ̃)
+    // 典型值：c1 = 0.01, c2 = 0.02（可根据需要调整）
+    _c1 = 0.005f;
+    _c2 = 0.005f;
 }
 
 // 分配内存并重置模拟状态
@@ -391,19 +480,53 @@ void Kobayashi::_computeGradientLaplacian()
                     omega_z = -_gradPhiZ[idx] / _gradPhiMag[idx];
                 }
 
-                // 计算 Ω 和 Ω_ori 之间的夹角
-                float dot_omega = omega_x * omega_p_x + omega_y * omega_p_y + omega_z * omega_p_z;
-                dot_omega = fmax(-1.0f, fmin(1.0f, dot_omega));
-                float angle_diff = acos(dot_omega);
+                // 将 Ω 从全局坐标转换到以 Ω_ori 为z轴的局部坐标
+                // 使用 Rodrigues 旋转公式
+                // k = u_ori × u0，Θ = θ_ori
+                float theta_ori = acos(fmax(-1.0f, fmin(1.0f, omega_p_z)));
+                float phi_ori = atan2(omega_p_y, omega_p_x);
 
-                // 各向异性系数：ε = ε̄(1 + δ·cos(j_fold·angle_diff))
-                _epsilon[idx] = _epsilonBar * (1.0f + _delta * cos(j_fold * angle_diff));
+                // 旋转 Ω 到局部坐标系
+                float omega_rot_x, omega_rot_y, omega_rot_z;
+                rodriguesRotation(omega_x, omega_y, omega_z,
+                                 omega_p_x, omega_p_y, omega_p_z,
+                                 theta_ori,
+                                 omega_rot_x, omega_rot_y, omega_rot_z);
 
-                // 各向异性系数对角度的导数：∂ε/∂angle = -ε̄·j_fold·δ·sin(j_fold·angle_diff)
-                _epsilonDerivTheta[idx] = -_epsilonBar * j_fold * _delta * sin(j_fold * angle_diff);
+                // 从旋转后的向量计算局部球坐标 (θ̃, φ̃)
+                float theta_tilde = acos(fmax(-1.0f, fmin(1.0f, omega_rot_z)));
+                float phi_tilde = atan2(omega_rot_y, omega_rot_x);
 
-                // 对 φ 的导数（简化为0）
-                _epsilonDerivPhi[idx] = 0.0f;
+                // 计算三角函数值
+                float sin_theta_t = sin(theta_tilde);
+                float cos_theta_t = cos(theta_tilde);
+                float sin_phi_t = sin(phi_tilde);
+                float cos_phi_t = cos(phi_tilde);
+
+                float sin2_theta_t = sin_theta_t * sin_theta_t;
+                float cos2_theta_t = cos_theta_t * cos_theta_t;
+                float sin2_phi_t = sin_phi_t * sin_phi_t;
+                float cos2_phi_t = cos_phi_t * cos_phi_t;
+
+                float sin4_theta_t = sin2_theta_t * sin2_theta_t;
+                float cos4_theta_t = cos2_theta_t * cos2_theta_t;
+                float sin4_phi_t = sin2_phi_t * sin2_phi_t;
+                float cos4_phi_t = cos2_phi_t * cos2_phi_t;
+
+                // 公式(19)：ε_o(n) = c1 + c2(sin⁴θ̃(sin⁴φ̃ + cos⁴φ̃) + cos⁴θ̃)
+                float epsilon_o = _c1 + _c2 * (sin4_theta_t * (sin4_phi_t + cos4_phi_t) + cos4_theta_t);
+                _epsilon[idx] = epsilon_o;
+
+                // 计算各向异性系数对 θ̃ 的导数
+                // ∂ε_o/∂θ̃ = c2 * (4sin³θ̃cosθ̃(sin⁴φ̃ + cos⁴φ̃) - 4cos³θ̃sinθ̃)
+                float dEpsilon_dTheta_t = _c2 * (4.0f * sin2_theta_t * sin_theta_t * cos_theta_t * (sin4_phi_t + cos4_phi_t)
+                                                - 4.0f * cos2_theta_t * cos_theta_t * sin_theta_t);
+                _epsilonDerivTheta[idx] = dEpsilon_dTheta_t;
+
+                // 计算各向异性系数对 φ̃ 的导数
+                // ∂ε_o/∂φ̃ = c2 * sin⁴θ̃ * 4sinφ̃cosφ̃(sin²φ̃ - cos²φ̃)
+                float dEpsilon_dPhi_t = _c2 * sin4_theta_t * 4.0f * sin_phi_t * cos_phi_t * (sin2_phi_t - cos2_phi_t);
+                _epsilonDerivPhi[idx] = dEpsilon_dPhi_t;
             }
         }
     }
@@ -488,8 +611,10 @@ void Kobayashi::_evolution()
                     float eps_phi_zp = _epsilonDerivPhi[idx_zp];
                     float gradPhiMag2_zp = _gradPhiMag[idx_zp] * _gradPhiMag[idx_zp];
 
-                    val_z_plus = (eps_zp / (tau_zp + FLT_EPSILON)) * eps_theta_zp * _gradPhiX[idx_zp]
-                               - (eps_zp / ((tau_zp * tau_zp) + FLT_EPSILON)) * eps_phi_zp * gradPhiMag2_zp * _gradPhiY[idx_zp];
+                    // 添加数值稳定性：tau_zp 太小时设为 FLT_EPSILON
+                    float tau_zp_safe = fmax(tau_zp, FLT_EPSILON);
+                    val_z_plus = (eps_zp / tau_zp_safe) * eps_theta_zp * _gradPhiX[idx_zp]
+                               - (eps_zp / (tau_zp_safe * tau_zp_safe)) * eps_phi_zp * gradPhiMag2_zp * _gradPhiY[idx_zp];
                 }
                 {
                     int idx_zm = _INDEX(i, j, k_minus);
@@ -499,8 +624,10 @@ void Kobayashi::_evolution()
                     float eps_phi_zm = _epsilonDerivPhi[idx_zm];
                     float gradPhiMag2_zm = _gradPhiMag[idx_zm] * _gradPhiMag[idx_zm];
 
-                    val_z_minus = (eps_zm / (tau_zm + FLT_EPSILON)) * eps_theta_zm * _gradPhiX[idx_zm]
-                                - (eps_zm / ((tau_zm * tau_zm) + FLT_EPSILON)) * eps_phi_zm * gradPhiMag2_zm * _gradPhiY[idx_zm];
+                    // 添加数值稳定性：tau_zm 太小时设为 FLT_EPSILON
+                    float tau_zm_safe = fmax(tau_zm, FLT_EPSILON);
+                    val_z_minus = (eps_zm / tau_zm_safe) * eps_theta_zm * _gradPhiX[idx_zm]
+                                - (eps_zm / (tau_zm_safe * tau_zm_safe)) * eps_phi_zm * gradPhiMag2_zm * _gradPhiY[idx_zm];
                 }
                 float term_z = (val_z_plus - val_z_minus) / (2.0f * _dz);
 
@@ -514,8 +641,10 @@ void Kobayashi::_evolution()
                     float eps_phi_yp = _epsilonDerivPhi[idx_yp];
                     float gradPhiMag2_yp = _gradPhiMag[idx_yp] * _gradPhiMag[idx_yp];
 
-                    val_y_plus = (eps_yp / (tau_yp + FLT_EPSILON)) * eps_theta_yp * _gradPhiZ[idx_yp]
-                               + (eps_yp / ((tau_yp * tau_yp) + FLT_EPSILON)) * eps_phi_yp * gradPhiMag2_yp * _gradPhiX[idx_yp];
+                    // 添加数值稳定性
+                    float tau_yp_safe = fmax(tau_yp, FLT_EPSILON);
+                    val_y_plus = (eps_yp / tau_yp_safe) * eps_theta_yp * _gradPhiZ[idx_yp]
+                               + (eps_yp / (tau_yp_safe * tau_yp_safe)) * eps_phi_yp * gradPhiMag2_yp * _gradPhiX[idx_yp];
                 }
                 {
                     int idx_ym = _INDEX(i, j_minus, k);
@@ -525,8 +654,10 @@ void Kobayashi::_evolution()
                     float eps_phi_ym = _epsilonDerivPhi[idx_ym];
                     float gradPhiMag2_ym = _gradPhiMag[idx_ym] * _gradPhiMag[idx_ym];
 
-                    val_y_minus = (eps_ym / (tau_ym + FLT_EPSILON)) * eps_theta_ym * _gradPhiZ[idx_ym]
-                                + (eps_ym / ((tau_ym * tau_ym) + FLT_EPSILON)) * eps_phi_ym * gradPhiMag2_ym * _gradPhiX[idx_ym];
+                    // 添加数值稳定性
+                    float tau_ym_safe = fmax(tau_ym, FLT_EPSILON);
+                    val_y_minus = (eps_ym / tau_ym_safe) * eps_theta_ym * _gradPhiZ[idx_ym]
+                                + (eps_ym / (tau_ym_safe * tau_ym_safe)) * eps_phi_ym * gradPhiMag2_ym * _gradPhiX[idx_ym];
                 }
                 float term_y = (val_y_plus - val_y_minus) / (2.0f * _dy);
 
@@ -554,8 +685,8 @@ void Kobayashi::_evolution()
                 float dPhiDt = M_eta * (term_diffusion + term_grad_eps2 + term_z + term_y + term_eps_tau
                                       - g_prime - p_prime * f_diff);
 
-                // 更新相场
-                _phi[idx] = oldPhi + dPhiDt * _dt;
+                // 更新相场，并限制在 [0, 1] 范围内
+                _phi[idx] = fmax(0.0f, fmin(1.0f, oldPhi + dPhiDt * _dt));
 
                 // ========== 热传导方程 + 潜热释放 ==========
                 // ∂T/∂t = a²·∇²T + K·∂η/∂t

@@ -36,12 +36,10 @@ private:
     float _alpha_T; // 热扩散系数 a² (thermal diffusivity)
     float _H; // 取向场驱动力系数
     float M_ori; // 取向场迁移率
+    float _c1, _c2; // 公式(19)中的各向异性系数：ε_o(n) = c1 + c2*(sin⁴θ̃(sin⁴φ̃ + cos⁴φ̃) + cos⁴θ̃)
 
     // 相场、温度场
     std::vector<float> _phi, _t;
-
-    // 取向场：Ω_ori = (θ_ori, φ_ori)
-    std::vector<float> _theta_ori, _phi_ori;
 
     // 相场梯度和拉普拉斯算子
     std::vector<float> _gradPhiX, _gradPhiY, _gradPhiZ;
@@ -55,9 +53,18 @@ private:
     // 各向异性系数及其导数
     std::vector<float> _epsilon, _epsilonDerivTheta, _epsilonDerivPhi;
 
-    // 取向场梯度：∇Ω_ori
-    std::vector<float> _gradThetaOriX, _gradThetaOriY, _gradThetaOriZ;
-    std::vector<float> _gradPhiOriX, _gradPhiOriY, _gradPhiOriZ;
+    // 取向场：Ω_ori 用单位球上的点表示
+    // 使用笛卡尔坐标 (x, y, z) 存储单位向量
+    std::vector<float> _omega_ori_x, _omega_ori_y, _omega_ori_z;
+
+    // 取向场的局部极坐标表示 (ρ, λ)
+    // ρ: 中心角（大圆距离）
+    // λ: 立体投影后的极坐标角度
+    std::vector<float> _rho_x_plus, _rho_x_minus, _rho_y_plus, _rho_y_minus, _rho_z_plus, _rho_z_minus;
+    std::vector<float> _lambda_x_plus, _lambda_x_minus, _lambda_y_plus, _lambda_y_minus, _lambda_z_plus, _lambda_z_minus;
+
+    // 取向场梯度：∇Ω_ori（使用 (ρ, λ) 计算）
+    std::vector<float> _gradOmegaOriMag; // ||∇Ω_ori||
 
     // OpenGL 纹理（显示中间切片）
     std::vector<unsigned char> _pixelBuffer;

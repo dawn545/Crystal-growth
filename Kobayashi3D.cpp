@@ -51,11 +51,11 @@ void Kobayashi::_initParams() {
     // 在各向异性系数公式中：ε(θ) = ε̄(1 + δ·cos(j_fold·(θ₀ - θ)))
     j_fold = 6.0f;
 
-    // 各向异性参考角度 θ₀，决定晶体的初始朝向（单位：弧度）
+    // 各向异性参考角度 θ_ori，决定晶体的初始朝向（单位：弧度）
     // 物理意义：控制晶体主轴的旋转角度
-    // θ₀ = 0.0 表示晶体的一个主轴沿 x 轴正方向
-    // θ₀ = π/6 会让六角形晶体旋转 30 度
-    theta_0 = 0.0f;
+    // θ_ori = 0.0 表示晶体的一个主轴沿 x 轴正方向
+    // θ_ori = π/6 会让六角形晶体旋转 30 度
+    theta_ori = 0.0f;
 
     // 过冷度系数 α，用于计算驱动力（单位：无量纲）
     // 在 m = (α/π)arctan(γ(T_eq - T)) 中使用
@@ -176,13 +176,13 @@ void Kobayashi::_computeGradientLaplacian()
             // ========== 4. 计算各向异性系数 (Anisotropy Coefficient) ==========
             // 物理意义：晶体不是圆球，它在不同方向生长速度不同（这就形成了雪花形状）。
             // 这个公式让 epsilon 随角度变化，从而产生各向异性。
-            // 公式：ε(θ) = ε̄(1 + δ·cos(j_fold·(θ₀ - θ)))
-            // 其中：ε̄ = 平均各向异性强度，δ = 各向异性强度，j_fold = 折叠对称性（6=六角形），θ₀ = 参考角度
-            _epsilon[_INDEX(i, j)] = _epsilonBar * (1.0f + _delta * cos(j_fold * (theta_0 - _angl[_INDEX(i, j)])));
+            // 公式：ε(θ) = ε̄(1 + δ·cos(j_fold·(θ_ori - θ)))
+            // 其中：ε̄ = 平均各向异性强度，δ = 各向异性强度，j_fold = 折叠对称性（6=六角形），θ_ori = 参考角度
+            _epsilon[_INDEX(i, j)] = _epsilonBar * (1.0f + _delta * cos(j_fold * (theta_ori - _angl[_INDEX(i, j)])));
 
             // 各向异性系数的导数，用于计算界面能的梯度
-            // 公式：dε/dθ = ε̄·j_fold·δ·sin(j_fold·(θ₀ - θ))
-            _epsilonDeriv[_INDEX(i, j)] = _epsilonBar * j_fold * _delta * sin(j_fold * (theta_0 - _angl[_INDEX(i, j)]));
+            // 公式：dε/dθ = ε̄·j_fold·δ·sin(j_fold·(θ_ori - θ))
+            _epsilonDeriv[_INDEX(i, j)] = _epsilonBar * j_fold * _delta * sin(j_fold * (theta_ori - _angl[_INDEX(i, j)]));
         }
     }
 }

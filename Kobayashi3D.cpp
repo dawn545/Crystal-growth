@@ -89,10 +89,6 @@ void Kobayashi::_vectorInit() {
     _phi.assign(vSize, 0.0f);
     _t.assign(vSize, 0.0f);
 
-    // 取向场：Ω_ori = (θ_ori, φ_ori)
-    _theta_ori.assign(vSize, 0.0f);
-    _phi_ori.assign(vSize, 0.0f);
-
     // 相场梯度和拉普拉斯算子
     _gradPhiX.assign(vSize, 0.0f);
     _gradPhiY.assign(vSize, 0.0f);
@@ -111,22 +107,99 @@ void Kobayashi::_vectorInit() {
     _epsilonDerivTheta.assign(vSize, 0.0f);
     _epsilonDerivPhi.assign(vSize, 0.0f);
 
-    // 取向场梯度
-    _gradThetaOriX.assign(vSize, 0.0f);
-    _gradThetaOriY.assign(vSize, 0.0f);
-    _gradThetaOriZ.assign(vSize, 0.0f);
-    _gradPhiOriX.assign(vSize, 0.0f);
-    _gradPhiOriY.assign(vSize, 0.0f);
-    _gradPhiOriZ.assign(vSize, 0.0f);
+    // 取向场：Ω_ori 用单位球上的点 (x, y, z) 表示
+    // 初始化为指向 z 轴正方向 (0, 0, 1)
+    _omega_ori_x.assign(vSize, 0.0f);
+    _omega_ori_y.assign(vSize, 0.0f);
+    _omega_ori_z.assign(vSize, 1.0f);
+
+    // 取向场的局部极坐标表示
+    _rho_x_plus.assign(vSize, 0.0f);
+    _rho_x_minus.assign(vSize, 0.0f);
+    _rho_y_plus.assign(vSize, 0.0f);
+    _rho_y_minus.assign(vSize, 0.0f);
+    _rho_z_plus.assign(vSize, 0.0f);
+    _rho_z_minus.assign(vSize, 0.0f);
+
+    _lambda_x_plus.assign(vSize, 0.0f);
+    _lambda_x_minus.assign(vSize, 0.0f);
+    _lambda_y_plus.assign(vSize, 0.0f);
+    _lambda_y_minus.assign(vSize, 0.0f);
+    _lambda_z_plus.assign(vSize, 0.0f);
+    _lambda_z_minus.assign(vSize, 0.0f);
+
+    // 取向场梯度模
+    _gradOmegaOriMag.assign(vSize, 0.0f);
 
     // 像素缓冲区：用于渲染切片，每个像素4个字节 (R,G,B,A)
     _pixelBuffer.assign(_objectCount.x * _objectCount.y * 4, 0);
 
     // 在中心创建一个初始晶核
     _createNucleus(_objectCount.x / 2, _objectCount.y / 2, _objectCount.z / 2);
-    
+
     // 立即更新一次纹理，确保初始画面不是黑的
     _updateTexture();
+}
+
+// ==========================================
+// 辅助函数：计算取向场相关的几何量
+// ==========================================
+
+// 计算两个单位向量之间的大圆距离（中心角）
+// 输入：两个单位向量 ω_p = (x_p, y_p, z_p) 和 ω_q = (x_q, y_q, z_q)
+// 输出：中心角 ρ ∈ [0, π]
+inline float centralAngle(float x_p, float y_p, float z_p, float x_q, float y_q, float z_q) {
+    // 使用点积计算：cos(ρ) = ω_p · ω_q
+    float dot = x_p * x_q + y_p * y_q + z_p * z_q;
+    // 限制在 [-1, 1] 范围内以避免数值误差
+    dot = fmax(-1.0f, fmin(1.0f, dot));
+    return acos(dot);
+}
+
+// 立体投影：将单位球上的点 ω_q 投影到以 ω_p 为极点的平面上
+// 然后计算投影点在局部极坐标中的角度 λ
+// 输入：ω_p (极点), ω_q (要投影的点)
+// 输出：角度 λ ∈ [0, 2π)
+inline float stereographicAngle(float x_p, float y_p, float z_p, float x_q, float y_q, float z_q) {
+    // 建立局部坐标系：
+    // 极点为 ω_p，需要找到两个正交的切向量作为基
+
+    // 第一个切向量：选择一个与 ω_p 不平行的向量，然后叉乘
+    float ref_x = 0.0f, ref_y = 0.0f, ref_z = 1.0f;
+    if (fabs(z_p) > 0.9f) {
+        // 如果 ω_p 接近 z 轴，使用 x 轴作为参考
+        ref_x = 1.0f; ref_y = 0.0f; ref_z = 0.0f;
+    }
+
+    // 第一个切向量：e1 = ref × ω_p（归一化）
+    float e1_x = ref_y * z_p - ref_z * y_p;
+    float e1_y = ref_z * x_p - ref_x * z_p;
+    float e1_z = ref_x * y_p - ref_y * x_p;
+    float e1_len = sqrt(e1_x * e1_x + e1_y * e1_y + e1_z * e1_z);
+    if (e1_len < FLT_EPSILON) return 0.0f;
+    e1_x /= e1_len; e1_y /= e1_len; e1_z /= e1_len;
+
+    // 第二个切向量：e2 = ω_p × e1（已经归一化）
+    float e2_x = y_p * e1_z - z_p * e1_y;
+    float e2_y = z_p * e1_x - x_p * e1_z;
+    float e2_z = x_p * e1_y - y_p * e1_x;
+
+    // 计算从 ω_p 到 ω_q 的向量在切平面上的投影
+    // 投影向量 = ω_q - (ω_q · ω_p) * ω_p
+    float dot_pq = x_p * x_q + y_p * y_q + z_p * z_q;
+    float proj_x = x_q - dot_pq * x_p;
+    float proj_y = y_q - dot_pq * y_p;
+    float proj_z = z_q - dot_pq * z_p;
+
+    // 将投影向量表示在 (e1, e2) 基下
+    float coord_e1 = proj_x * e1_x + proj_y * e1_y + proj_z * e1_z;
+    float coord_e2 = proj_x * e2_x + proj_y * e2_y + proj_z * e2_z;
+
+    // 计算极坐标角度
+    float lambda = atan2(coord_e2, coord_e1);
+    if (lambda < 0.0f) lambda += 2.0f * PI_F;
+
+    return lambda;
 }
 
 // 在网格中心放置一个微小的”种子”，让晶体开始生长
@@ -216,31 +289,120 @@ void Kobayashi::_computeGradientLaplacian()
                             + _t[_INDEX(i, j, k_plus)] + _t[_INDEX(i, j, k_minus)]
                             - 6.0f * _t[idx]) / (_dx * _dx);
 
-                // ========== 4. 计算取向场梯度 ∇Ω_ori = (∇θ_ori, ∇φ_ori) ==========
-                // 物理意义：取向场的空间变化率
-                _gradThetaOriX[idx] = (_theta_ori[_INDEX(i_plus, j, k)] - _theta_ori[_INDEX(i_minus, j, k)]) / (2.0f * _dx);
-                _gradThetaOriY[idx] = (_theta_ori[_INDEX(i, j_plus, k)] - _theta_ori[_INDEX(i, j_minus, k)]) / (2.0f * _dy);
-                _gradThetaOriZ[idx] = (_theta_ori[_INDEX(i, j, k_plus)] - _theta_ori[_INDEX(i, j, k_minus)]) / (2.0f * _dz);
+                // ========== 4. 算法1：计算取向场梯度 ∇Ω_ori ==========
+                // 使用立体投影和局部极坐标方法
+                // 参考：Algorithm 1 - Calculation of ∇Ω_ori
 
-                _gradPhiOriX[idx] = (_phi_ori[_INDEX(i_plus, j, k)] - _phi_ori[_INDEX(i_minus, j, k)]) / (2.0f * _dx);
-                _gradPhiOriY[idx] = (_phi_ori[_INDEX(i, j_plus, k)] - _phi_ori[_INDEX(i, j_minus, k)]) / (2.0f * _dy);
-                _gradPhiOriZ[idx] = (_phi_ori[_INDEX(i, j, k_plus)] - _phi_ori[_INDEX(i, j, k_minus)]) / (2.0f * _dz);
+                // 当前点的取向 ω_p
+                float omega_p_x = _omega_ori_x[idx];
+                float omega_p_y = _omega_ori_y[idx];
+                float omega_p_z = _omega_ori_z[idx];
+
+                // 对每个邻居计算 (ρ, λ)
+                // x+ 方向
+                {
+                    int idx_q = _INDEX(i_plus, j, k);
+                    float omega_q_x = _omega_ori_x[idx_q];
+                    float omega_q_y = _omega_ori_y[idx_q];
+                    float omega_q_z = _omega_ori_z[idx_q];
+
+                    _rho_x_plus[idx] = centralAngle(omega_p_x, omega_p_y, omega_p_z, omega_q_x, omega_q_y, omega_q_z);
+                    _lambda_x_plus[idx] = stereographicAngle(omega_p_x, omega_p_y, omega_p_z, omega_q_x, omega_q_y, omega_q_z);
+                }
+
+                // x- 方向
+                {
+                    int idx_q = _INDEX(i_minus, j, k);
+                    float omega_q_x = _omega_ori_x[idx_q];
+                    float omega_q_y = _omega_ori_y[idx_q];
+                    float omega_q_z = _omega_ori_z[idx_q];
+
+                    _rho_x_minus[idx] = centralAngle(omega_p_x, omega_p_y, omega_p_z, omega_q_x, omega_q_y, omega_q_z);
+                    _lambda_x_minus[idx] = stereographicAngle(omega_p_x, omega_p_y, omega_p_z, omega_q_x, omega_q_y, omega_q_z);
+                }
+
+                // y+ 方向
+                {
+                    int idx_q = _INDEX(i, j_plus, k);
+                    float omega_q_x = _omega_ori_x[idx_q];
+                    float omega_q_y = _omega_ori_y[idx_q];
+                    float omega_q_z = _omega_ori_z[idx_q];
+
+                    _rho_y_plus[idx] = centralAngle(omega_p_x, omega_p_y, omega_p_z, omega_q_x, omega_q_y, omega_q_z);
+                    _lambda_y_plus[idx] = stereographicAngle(omega_p_x, omega_p_y, omega_p_z, omega_q_x, omega_q_y, omega_q_z);
+                }
+
+                // y- 方向
+                {
+                    int idx_q = _INDEX(i, j_minus, k);
+                    float omega_q_x = _omega_ori_x[idx_q];
+                    float omega_q_y = _omega_ori_y[idx_q];
+                    float omega_q_z = _omega_ori_z[idx_q];
+
+                    _rho_y_minus[idx] = centralAngle(omega_p_x, omega_p_y, omega_p_z, omega_q_x, omega_q_y, omega_q_z);
+                    _lambda_y_minus[idx] = stereographicAngle(omega_p_x, omega_p_y, omega_p_z, omega_q_x, omega_q_y, omega_q_z);
+                }
+
+                // z+ 方向
+                {
+                    int idx_q = _INDEX(i, j, k_plus);
+                    float omega_q_x = _omega_ori_x[idx_q];
+                    float omega_q_y = _omega_ori_y[idx_q];
+                    float omega_q_z = _omega_ori_z[idx_q];
+
+                    _rho_z_plus[idx] = centralAngle(omega_p_x, omega_p_y, omega_p_z, omega_q_x, omega_q_y, omega_q_z);
+                    _lambda_z_plus[idx] = stereographicAngle(omega_p_x, omega_p_y, omega_p_z, omega_q_x, omega_q_y, omega_q_z);
+                }
+
+                // z- 方向
+                {
+                    int idx_q = _INDEX(i, j, k_minus);
+                    float omega_q_x = _omega_ori_x[idx_q];
+                    float omega_q_y = _omega_ori_y[idx_q];
+                    float omega_q_z = _omega_ori_z[idx_q];
+
+                    _rho_z_minus[idx] = centralAngle(omega_p_x, omega_p_y, omega_p_z, omega_q_x, omega_q_y, omega_q_z);
+                    _lambda_z_minus[idx] = stereographicAngle(omega_p_x, omega_p_y, omega_p_z, omega_q_x, omega_q_y, omega_q_z);
+                }
+
+                // 计算 ∇Ω_ori 的模
+                // 使用 (ρ, λ) 场的梯度来近似
+                // ||∇Ω_ori|| ≈ sqrt((∂ρ/∂x)² + (∂ρ/∂y)² + (∂ρ/∂z)² + (∂λ/∂x)² + (∂λ/∂y)² + (∂λ/∂z)²)
+                float grad_rho_x = (_rho_x_plus[idx] - _rho_x_minus[idx]) / (2.0f * _dx);
+                float grad_rho_y = (_rho_y_plus[idx] - _rho_y_minus[idx]) / (2.0f * _dy);
+                float grad_rho_z = (_rho_z_plus[idx] - _rho_z_minus[idx]) / (2.0f * _dz);
+
+                float grad_lambda_x = (_lambda_x_plus[idx] - _lambda_x_minus[idx]) / (2.0f * _dx);
+                float grad_lambda_y = (_lambda_y_plus[idx] - _lambda_y_minus[idx]) / (2.0f * _dy);
+                float grad_lambda_z = (_lambda_z_plus[idx] - _lambda_z_minus[idx]) / (2.0f * _dz);
+
+                _gradOmegaOriMag[idx] = sqrt(grad_rho_x * grad_rho_x + grad_rho_y * grad_rho_y + grad_rho_z * grad_rho_z
+                                           + grad_lambda_x * grad_lambda_x + grad_lambda_y * grad_lambda_y + grad_lambda_z * grad_lambda_z);
 
                 // ========== 5. 计算各向异性系数 ε(Ω, Ω_ori) 及其导数 ==========
                 // 物理意义：晶体在不同方向生长速度不同
-                // 这里需要根据 Ω 和 Ω_ori 的夹角来计算各向异性
-                // 简化实现：使用球坐标的角度差
-                float dTheta = _theta_ori[idx] - _theta[idx];
-                float dPhi = _phi_ori[idx] - _phi_angle[idx];
+                // 计算局部相位前沿方向 Ω 和取向场 Ω_ori 之间的夹角
 
-                // 各向异性系数：ε = ε̄(1 + δ·cos(j_fold·Δθ))
-                // 这里简化为只考虑 θ 方向的各向异性
-                _epsilon[idx] = _epsilonBar * (1.0f + _delta * cos(j_fold * dTheta));
+                // Ω = -∇η (归一化)
+                float omega_x = 0.0f, omega_y = 0.0f, omega_z = 0.0f;
+                if (_gradPhiMag[idx] > FLT_EPSILON) {
+                    omega_x = -_gradPhiX[idx] / _gradPhiMag[idx];
+                    omega_y = -_gradPhiY[idx] / _gradPhiMag[idx];
+                    omega_z = -_gradPhiZ[idx] / _gradPhiMag[idx];
+                }
 
-                // 各向异性系数对 θ 的导数：∂ε/∂θ = -ε̄·j_fold·δ·sin(j_fold·Δθ)
-                _epsilonDerivTheta[idx] = -_epsilonBar * j_fold * _delta * sin(j_fold * dTheta);
+                // 计算 Ω 和 Ω_ori 之间的夹角
+                float dot_omega = omega_x * omega_p_x + omega_y * omega_p_y + omega_z * omega_p_z;
+                dot_omega = fmax(-1.0f, fmin(1.0f, dot_omega));
+                float angle_diff = acos(dot_omega);
 
-                // 各向异性系数对 φ 的导数（简化为0，因为主要各向异性在 θ 方向）
+                // 各向异性系数：ε = ε̄(1 + δ·cos(j_fold·angle_diff))
+                _epsilon[idx] = _epsilonBar * (1.0f + _delta * cos(j_fold * angle_diff));
+
+                // 各向异性系数对角度的导数：∂ε/∂angle = -ε̄·j_fold·δ·sin(j_fold·angle_diff)
+                _epsilonDerivTheta[idx] = -_epsilonBar * j_fold * _delta * sin(j_fold * angle_diff);
+
+                // 对 φ 的导数（简化为0）
                 _epsilonDerivPhi[idx] = 0.0f;
             }
         }
@@ -286,8 +448,9 @@ void Kobayashi::_evolution()
                 // 保存旧值
                 float oldPhi = _phi[idx];
                 float oldT = _t[idx];
-                float oldThetaOri = _theta_ori[idx];
-                float oldPhiOri = _phi_ori[idx];
+                float oldOmegaX = _omega_ori_x[idx];
+                float oldOmegaY = _omega_ori_y[idx];
+                float oldOmegaZ = _omega_ori_z[idx];
 
                 // 获取当前点的各向异性参数
                 float eps = _epsilon[idx];
@@ -380,14 +543,8 @@ void Kobayashi::_evolution()
                 // p(η) = η²(3-2η), p'(η) = 6η(1-η)
                 float p_prime = 6.0f * oldPhi * (1.0f - oldPhi);
 
-                // 计算取向场梯度模：||∇Ω_ori|| = sqrt(|∇θ_ori|² + |∇φ_ori|²)
-                float gradThetaOriMag2 = _gradThetaOriX[idx] * _gradThetaOriX[idx]
-                                       + _gradThetaOriY[idx] * _gradThetaOriY[idx]
-                                       + _gradThetaOriZ[idx] * _gradThetaOriZ[idx];
-                float gradPhiOriMag2 = _gradPhiOriX[idx] * _gradPhiOriX[idx]
-                                     + _gradPhiOriY[idx] * _gradPhiOriY[idx]
-                                     + _gradPhiOriZ[idx] * _gradPhiOriZ[idx];
-                float gradOmegaOriMag = sqrt(gradThetaOriMag2 + gradPhiOriMag2);
+                // 使用已经计算好的取向场梯度模
+                float gradOmegaOriMag = _gradOmegaOriMag[idx];
 
                 // f_s - f_t + f_ori
                 // f_t = 0 (液相自由能), f_s = -m/6 (固相自由能), f_ori = H·||∇Ω_ori||
@@ -406,35 +563,63 @@ void Kobayashi::_evolution()
 
                 // ========== 公式(18)：取向场演化方程 ==========
                 // ∂Ω_ori/∂t = -M_ori·H·(1-p(η))·∇·[p(η)·∇Ω_ori/||∇Ω_ori||]
-                // 这里 Ω_ori = (θ_ori, φ_ori)，需要分别更新两个分量
+                // Ω_ori 用单位向量 (x, y, z) 表示
+                // 这个方程需要在切空间中计算
 
                 float p_eta = oldPhi * oldPhi * (3.0f - 2.0f * oldPhi);
 
-                // 更新 θ_ori
-                float dThetaOriDt = 0.0f;
-                if (sqrt(gradThetaOriMag2) > FLT_EPSILON) {
-                    // 计算 θ_ori 的拉普拉斯算子（7点模板）
-                    float lapThetaOri = (_theta_ori[_INDEX(i_plus, j, k)] + _theta_ori[_INDEX(i_minus, j, k)]
-                                       + _theta_ori[_INDEX(i, j_plus, k)] + _theta_ori[_INDEX(i, j_minus, k)]
-                                       + _theta_ori[_INDEX(i, j, k_plus)] + _theta_ori[_INDEX(i, j, k_minus)]
-                                       - 6.0f * oldThetaOri) / (_dx * _dx);
+                // 计算取向场的拉普拉斯算子（对每个分量）
+                float lapOmegaX = (_omega_ori_x[_INDEX(i_plus, j, k)] + _omega_ori_x[_INDEX(i_minus, j, k)]
+                                 + _omega_ori_x[_INDEX(i, j_plus, k)] + _omega_ori_x[_INDEX(i, j_minus, k)]
+                                 + _omega_ori_x[_INDEX(i, j, k_plus)] + _omega_ori_x[_INDEX(i, j, k_minus)]
+                                 - 6.0f * oldOmegaX) / (_dx * _dx);
 
-                    dThetaOriDt = -M_ori * _H * (1.0f - p_eta) * p_eta * lapThetaOri / sqrt(gradThetaOriMag2);
+                float lapOmegaY = (_omega_ori_y[_INDEX(i_plus, j, k)] + _omega_ori_y[_INDEX(i_minus, j, k)]
+                                 + _omega_ori_y[_INDEX(i, j_plus, k)] + _omega_ori_y[_INDEX(i, j_minus, k)]
+                                 + _omega_ori_y[_INDEX(i, j, k_plus)] + _omega_ori_y[_INDEX(i, j, k_minus)]
+                                 - 6.0f * oldOmegaY) / (_dx * _dx);
+
+                float lapOmegaZ = (_omega_ori_z[_INDEX(i_plus, j, k)] + _omega_ori_z[_INDEX(i_minus, j, k)]
+                                 + _omega_ori_z[_INDEX(i, j_plus, k)] + _omega_ori_z[_INDEX(i, j_minus, k)]
+                                 + _omega_ori_z[_INDEX(i, j, k_plus)] + _omega_ori_z[_INDEX(i, j, k_minus)]
+                                 - 6.0f * oldOmegaZ) / (_dx * _dx);
+
+                // 投影到切空间：去除法向分量
+                // 切空间拉普拉斯 = 拉普拉斯 - (拉普拉斯·ω)ω
+                float lap_dot_omega = lapOmegaX * oldOmegaX + lapOmegaY * oldOmegaY + lapOmegaZ * oldOmegaZ;
+                float lapOmegaX_tangent = lapOmegaX - lap_dot_omega * oldOmegaX;
+                float lapOmegaY_tangent = lapOmegaY - lap_dot_omega * oldOmegaY;
+                float lapOmegaZ_tangent = lapOmegaZ - lap_dot_omega * oldOmegaZ;
+
+                // 计算演化速率
+                float coeff = -M_ori * _H * (1.0f - p_eta) * p_eta;
+                if (gradOmegaOriMag > FLT_EPSILON) {
+                    coeff /= gradOmegaOriMag;
+                } else {
+                    coeff = 0.0f;
                 }
-                _theta_ori[idx] = oldThetaOri + dThetaOriDt * _dt;
 
-                // 更新 φ_ori
-                float dPhiOriDt = 0.0f;
-                if (sqrt(gradPhiOriMag2) > FLT_EPSILON) {
-                    // 计算 φ_ori 的拉普拉斯算子（7点模板）
-                    float lapPhiOri = (_phi_ori[_INDEX(i_plus, j, k)] + _phi_ori[_INDEX(i_minus, j, k)]
-                                     + _phi_ori[_INDEX(i, j_plus, k)] + _phi_ori[_INDEX(i, j_minus, k)]
-                                     + _phi_ori[_INDEX(i, j, k_plus)] + _phi_ori[_INDEX(i, j, k_minus)]
-                                     - 6.0f * oldPhiOri) / (_dx * _dx);
+                float dOmegaXDt = coeff * lapOmegaX_tangent;
+                float dOmegaYDt = coeff * lapOmegaY_tangent;
+                float dOmegaZDt = coeff * lapOmegaZ_tangent;
 
-                    dPhiOriDt = -M_ori * _H * (1.0f - p_eta) * p_eta * lapPhiOri / sqrt(gradPhiOriMag2);
+                // 更新取向场
+                float newOmegaX = oldOmegaX + dOmegaXDt * _dt;
+                float newOmegaY = oldOmegaY + dOmegaYDt * _dt;
+                float newOmegaZ = oldOmegaZ + dOmegaZDt * _dt;
+
+                // 重新归一化到单位球面
+                float omegaNorm = sqrt(newOmegaX * newOmegaX + newOmegaY * newOmegaY + newOmegaZ * newOmegaZ);
+                if (omegaNorm > FLT_EPSILON) {
+                    _omega_ori_x[idx] = newOmegaX / omegaNorm;
+                    _omega_ori_y[idx] = newOmegaY / omegaNorm;
+                    _omega_ori_z[idx] = newOmegaZ / omegaNorm;
+                } else {
+                    // 如果归一化失败，保持原值
+                    _omega_ori_x[idx] = oldOmegaX;
+                    _omega_ori_y[idx] = oldOmegaY;
+                    _omega_ori_z[idx] = oldOmegaZ;
                 }
-                _phi_ori[idx] = oldPhiOri + dPhiOriDt * _dt;
             }
         }
     }

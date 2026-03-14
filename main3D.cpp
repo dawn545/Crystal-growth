@@ -39,14 +39,17 @@ void keyboard(unsigned char key, int x, int y) {
 int main(int argc, char** argv) {
     // 1. 初始化 GLUT
     glutInit(&argc, argv);
-    glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGBA);
-    glutInitWindowSize(500, 500);
-    glutCreateWindow("Kobayashi Crystal (FreeGLUT)");
+    glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGBA | GLUT_DEPTH);
+    glutInitWindowSize(800, 800);
+    glutCreateWindow("Kobayashi 3D Crystal Growth");
 
-    // 2. 初始化模拟器
-    g_sim = new Kobayashi(250, 250, 0.0001f);
+    // 启用深度测试（3D渲染必需）
+    glEnable(GL_DEPTH_TEST);
+
+    // 2. 初始化模拟器（3D网格：100x100x100）
+    g_sim = new Kobayashi(100, 100, 100, 0.0001f);
     g_sim->glInit();
-    
+
     std::cout << "Controls:\n [Space]: Pause/Play\n [R]: Reset\n [ESC]: Quit" << std::endl;
 
     // 3. 注册回调函数

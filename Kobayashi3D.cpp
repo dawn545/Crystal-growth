@@ -51,12 +51,6 @@ void Kobayashi::_initParams() {
     // 在各向异性系数公式中：ε(θ) = ε̄(1 + δ·cos(j_fold·(θ₀ - θ)))
     j_fold = 6.0f;
 
-    // 各向异性参考角度 θ_ori，决定晶体的初始朝向（单位：弧度）
-    // 物理意义：控制晶体主轴的旋转角度
-    // θ_ori = 0.0 表示晶体的一个主轴沿 x 轴正方向
-    // θ_ori = π/6 会让六角形晶体旋转 30 度
-    theta_ori = 0.0f;
-
     // 过冷度系数 α，用于计算驱动力（单位：无量纲）
     // 在 m = (α/π)arctan(γ(T_eq - T)) 中使用
     _alpha = 0.9f;
@@ -76,6 +70,10 @@ void Kobayashi::_initParams() {
     // 取向场驱动力系数 H，控制取向场对晶体生长的影响强度
     // 物理意义：取向场梯度越大，对相场演化的驱动力越强
     _H = 0.0f; // 默认为 0，可根据需要调整
+
+    // 取向场迁移率 M_ori，控制取向场演化的速度
+    // 物理意义：值越大，取向场调整越快
+    _M_ori = 1.0f;
 }
 
 // 分配内存并重置模拟状态
@@ -84,8 +82,10 @@ void Kobayashi::_vectorInit() {
     
     // _phi: 相场变量 (0=液, 1=固)
     // _t: 温度场
-    _phi.assign(vSize, 0.0f); 
+    // _theta_ori: 取向场（每个点的晶体取向角度）
+    _phi.assign(vSize, 0.0f);
     _t.assign(vSize, 0.0f);
+    _theta_ori.assign(vSize, 0.0f); // 初始取向场为 0
     
     // 梯度(Gradient)和拉普拉斯(Laplacian)缓存，用于计算变化率
     _gradPhiX.assign(vSize, 0.0f); 
@@ -165,6 +165,13 @@ void Kobayashi::_computeGradientLaplacian()
                 + _t[_INDEX(i_plus, j_plus)] + _t[_INDEX(i_minus, j_minus)] + _t[_INDEX(i_minus, j_plus)] + _t[_INDEX(i_plus, j_minus)]
                 - 12.0f * _t[_INDEX(i, j)]) / (3.0f * _dx * _dx);
 
+            // ========== 2.5. 计算取向场梯度 (Orientation Field Gradient) ==========
+            // 物理意义：取向场的空间变化率，用于计算取向场驱动力
+            // 公式：∂θ_ori/∂x ≈ (θ_ori(i+1,j) - θ_ori(i-1,j)) / (2·Δx)  [中心差分法]
+            // 公式：∂θ_ori/∂y ≈ (θ_ori(i,j+1) - θ_ori(i,j-1)) / (2·Δy)
+            _gradThetaOriX[_INDEX(i, j)] = (_theta_ori[_INDEX(i_plus, j)] - _theta_ori[_INDEX(i_minus, j)]) / (2.0f * _dx);
+            _gradThetaOriY[_INDEX(i, j)] = (_theta_ori[_INDEX(i, j_plus)] - _theta_ori[_INDEX(i, j_minus)]) / (2.0f * _dy);
+
             // ========== 3. 计算界面法线角度 (Angle / 方向角) ==========
             // 物理意义：晶体界面的法线方向，用于确定各向异性系数
             // 公式：θ = atan2(∂φ/∂y, ∂φ/∂x)
@@ -185,12 +192,12 @@ void Kobayashi::_computeGradientLaplacian()
             // 物理意义：晶体不是圆球，它在不同方向生长速度不同（这就形成了雪花形状）。
             // 这个公式让 epsilon 随角度变化，从而产生各向异性。
             // 公式：ε(θ) = ε̄(1 + δ·cos(j_fold·(θ_ori - θ)))
-            // 其中：ε̄ = 平均各向异性强度，δ = 各向异性强度，j_fold = 折叠对称性（6=六角形），θ_ori = 参考角度
-            _epsilon[_INDEX(i, j)] = _epsilonBar * (1.0f + _delta * cos(j_fold * (theta_ori - _angl[_INDEX(i, j)])));
+            // 其中：ε̄ = 平均各向异性强度，δ = 各向异性强度，j_fold = 折叠对称性（6=六角形），θ_ori = 局部取向场
+            _epsilon[_INDEX(i, j)] = _epsilonBar * (1.0f + _delta * cos(j_fold * (_theta_ori[_INDEX(i, j)] - _angl[_INDEX(i, j)])));
 
             // 各向异性系数的导数，用于计算界面能的梯度
             // 公式：dε/dθ = ε̄·j_fold·δ·sin(j_fold·(θ_ori - θ))
-            _epsilonDeriv[_INDEX(i, j)] = _epsilonBar * j_fold * _delta * sin(j_fold * (theta_ori - _angl[_INDEX(i, j)]));
+            _epsilonDeriv[_INDEX(i, j)] = _epsilonBar * j_fold * _delta * sin(j_fold * (_theta_ori[_INDEX(i, j)] - _angl[_INDEX(i, j)]));
         }
     }
 }
@@ -240,16 +247,16 @@ void Kobayashi::_evolution()
             // 物理意义：温度越低（过冷度越大），驱动力越大，晶体生长越快
             float m = _alpha / PI_F * atan(_gamma * (_tEq - _t[_INDEX(i, j)]));
 
-            // ========== 计算取向场梯度 (Orientation Field Gradient) ==========
-            // 取向场 theta_ori 在当前实现中是常数，所以梯度为 0
-            // 如果 theta_ori 是空间变化的场，需要计算其梯度
-            // 公式：∇θ_ori = (∂θ_ori/∂x, ∂θ_ori/∂y)
-            // 目前假设 theta_ori 为常数场，梯度为 0
-            float gradThetaOriMag = 0.0f; // |∇θ_ori|
+            // ========== 计算取向场梯度模 (Orientation Field Gradient Magnitude) ==========
+            // 取向场梯度已在 _computeGradientLaplacian() 中计算
+            // 公式：|∇θ_ori| = sqrt((∂θ_ori/∂x)² + (∂θ_ori/∂y)²)
+            float gradThetaOriMag = sqrt(_gradThetaOriX[_INDEX(i, j)] * _gradThetaOriX[_INDEX(i, j)]
+                                       + _gradThetaOriY[_INDEX(i, j)] * _gradThetaOriY[_INDEX(i, j)]);
 
-            // 保存旧值，用于计算潜热释放
+            // 保存旧值，用于计算潜热释放和取向场更新
             float oldPhi = _phi[_INDEX(i, j)];
             float oldT = _t[_INDEX(i, j)];
+            float oldThetaOri = _theta_ori[_INDEX(i, j)];
 
             // ========== 核心更新公式 1：相场演化方程 (Modified Allen-Cahn Equation) ==========
             // 这是一个非线性偏微分方程，描述相场随时间的变化
@@ -290,6 +297,48 @@ void Kobayashi::_evolution()
             //          这个热量会减缓进一步的晶体生长（自我调节机制）
             // 时间积分：使用显式欧拉法 T_new = T_old + (∂T/∂t)·Δt
             _t[_INDEX(i, j)] = oldT + (_alpha_T * _lapT[_INDEX(i, j)] + _K * dPhiDt) * _dt;
+
+            // ========== 核心更新公式 3：取向场演化方程 (Orientation Field Evolution) ==========
+            // 这个方程描述取向场如何随时间演化，使晶体取向趋于一致
+            // 公式：∂θ_ori/∂t = -M_ori·H·(1-p(η))·∇·[p(η)·∇θ_ori/|∇θ_ori|]
+            // 其中：
+            //   - M_ori：取向场迁移率，控制取向场调整速度
+            //   - H：取向场驱动力系数
+            //   - p(η) = η²(3-2η)：插值函数，在固相中为 1，液相中为 0
+            //   - (1-p(η))：液相权重，只在液相中演化取向场
+            //   - ∇·[p(η)·∇θ_ori/|∇θ_ori|]：归一化梯度的散度，类似于平均曲率流
+            // 物理意义：在液相区域，取向场会扩散并趋于平滑；在固相区域，取向场被冻结
+            // 时间积分：使用显式欧拉法 θ_ori_new = θ_ori_old + (∂θ_ori/∂t)·Δt
+
+            // 计算插值函数 p(η) = η²(3-2η)
+            float p_eta = oldPhi * oldPhi * (3.0f - 2.0f * oldPhi);
+
+            // 计算归一化梯度：∇θ_ori/|∇θ_ori|
+            // 注意：需要避免除以零，当梯度很小时不更新取向场
+            float dThetaOriDt = 0.0f;
+            if (gradThetaOriMag > FLT_EPSILON) {
+                // 归一化梯度
+                float normGradX = _gradThetaOriX[_INDEX(i, j)] / gradThetaOriMag;
+                float normGradY = _gradThetaOriY[_INDEX(i, j)] / gradThetaOriMag;
+
+                // 计算 ∇·[p(η)·∇θ_ori/|∇θ_ori|] 使用中心差分法
+                // 这需要计算 p(η)·normGrad 在邻居点的值，然后求散度
+                // 简化实现：使用拉普拉斯算子近似（假设 |∇θ_ori| 变化不大）
+                // ∇·[p(η)·∇θ_ori/|∇θ_ori|] ≈ p(η)·∇²θ_ori/|∇θ_ori|
+
+                // 计算取向场的拉普拉斯算子（9点差分）
+                float lapThetaOri = (2.0f * (_theta_ori[_INDEX(i_plus, j)] + _theta_ori[_INDEX(i_minus, j)]
+                                           + _theta_ori[_INDEX(i, j_plus)] + _theta_ori[_INDEX(i, j_minus)])
+                    + _theta_ori[_INDEX(i_plus, j_plus)] + _theta_ori[_INDEX(i_minus, j_minus)]
+                    + _theta_ori[_INDEX(i_minus, j_plus)] + _theta_ori[_INDEX(i_plus, j_minus)]
+                    - 12.0f * oldThetaOri) / (3.0f * _dx * _dx);
+
+                // 计算 ∂θ_ori/∂t
+                dThetaOriDt = -_M_ori * _H * (1.0f - p_eta) * p_eta * lapThetaOri / gradThetaOriMag;
+            }
+
+            // 更新取向场
+            _theta_ori[_INDEX(i, j)] = oldThetaOri + dThetaOriDt * _dt;
         }
     }
 }

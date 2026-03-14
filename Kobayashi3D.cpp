@@ -72,6 +72,10 @@ void Kobayashi::_initParams() {
     // 物理意义：热量在材料中传播的快慢
     // 典型值：0.5 - 2.0，值越大温度扩散越快
     _alpha_T = 1.0f;
+
+    // 取向场驱动力系数 H，控制取向场对晶体生长的影响强度
+    // 物理意义：取向场梯度越大，对相场演化的驱动力越强
+    _H = 0.0f; // 默认为 0，可根据需要调整
 }
 
 // 分配内存并重置模拟状态
@@ -90,10 +94,14 @@ void Kobayashi::_vectorInit() {
     _lapT.assign(vSize, 0.0f);
     
     // 辅助变量：角度、各向异性系数及其导数
-    _angl.assign(vSize, 0.0f); 
-    _epsilon.assign(vSize, 0.0f); 
+    _angl.assign(vSize, 0.0f);
+    _epsilon.assign(vSize, 0.0f);
     _epsilonDeriv.assign(vSize, 0.0f);
-    
+
+    // 取向场梯度
+    _gradThetaOriX.assign(vSize, 0.0f);
+    _gradThetaOriY.assign(vSize, 0.0f);
+
     // 像素缓冲区：这是我们要传给显卡的数据，每个像素4个字节 (R,G,B,A)
     _pixelBuffer.assign(vSize * 4, 0);
     
@@ -232,22 +240,42 @@ void Kobayashi::_evolution()
             // 物理意义：温度越低（过冷度越大），驱动力越大，晶体生长越快
             float m = _alpha / PI_F * atan(_gamma * (_tEq - _t[_INDEX(i, j)]));
 
+            // ========== 计算取向场梯度 (Orientation Field Gradient) ==========
+            // 取向场 theta_ori 在当前实现中是常数，所以梯度为 0
+            // 如果 theta_ori 是空间变化的场，需要计算其梯度
+            // 公式：∇θ_ori = (∂θ_ori/∂x, ∂θ_ori/∂y)
+            // 目前假设 theta_ori 为常数场，梯度为 0
+            float gradThetaOriMag = 0.0f; // |∇θ_ori|
+
             // 保存旧值，用于计算潜热释放
             float oldPhi = _phi[_INDEX(i, j)];
             float oldT = _t[_INDEX(i, j)];
 
-            // ========== 核心更新公式 1：相场演化方程 (Allen-Cahn Equation) ==========
+            // ========== 核心更新公式 1：相场演化方程 (Modified Allen-Cahn Equation) ==========
             // 这是一个非线性偏微分方程，描述相场随时间的变化
-            // 公式：∂φ/∂t = M_ori*[ε²∇²φ + term1 + term2 + term3 + φ(1-φ)(φ-0.5+m)]
+            // 新公式：∂η/∂t = M_η[∇·(ε²∇η) - ∂/∂x(ε·∂ε/∂θ·∂η/∂y) + ∂/∂y(ε·∂ε/∂θ·∂η/∂x) - g'(η) - p'(η)(f_s - f_l + f_ori)]
             // 其中：
-            //   - ε²∇²φ：各向异性界面能的扩散项
+            //   - ε²∇²η：各向异性界面能的扩散项
             //   - term1, term2, term3：各向异性系数的贡献
-            //   - φ(1-φ)(φ-0.5+m)：双势阱势能项 + 驱动力项
-            // 时间积分：使用显式欧拉法 φ_new = φ_old + (∂φ/∂t)·Δt
+            //   - g'(η) = η(η-1)(η-0.5)：双势阱势能的导数
+            //   - p'(η) = 6η(1-η)：插值函数的导数，p(η) = η²(3-2η)
+            //   - f_s - f_l = -m/6：固液相自由能差
+            //   - f_ori = H|∇θ_ori|：取向场驱动力
+            // 时间积分：使用显式欧拉法 η_new = η_old + (∂η/∂t)·Δt
 
-            // 先计算 ∂φ/∂t
+            // 计算 g'(η) = d/dη[η²(η-1)²/4] = η(η-1)(η-0.5)
+            float g_prime = oldPhi * (oldPhi - 1.0f) * (oldPhi - 0.5f);
+
+            // 计算 p'(η) = d/dη[η²(3-2η)] = 6η(1-η)
+            float p_prime = 6.0f * oldPhi * (1.0f - oldPhi);
+
+            // 计算自由能差：f_s - f_l + f_ori
+            // f_l = 0, f_s = -m/6, f_ori = H|∇θ_ori|
+            float f_diff = -m / 6.0f + _H * gradThetaOriMag;
+
+            // 先计算 ∂η/∂t
             float dPhiDt = (term1 + term2 + _epsilon[_INDEX(i, j)] * _epsilon[_INDEX(i, j)] * _lapPhi[_INDEX(i, j)] + term3
-                    + oldPhi * (1.0f - oldPhi) * (oldPhi - 0.5f + m)) * M_ori;
+                    - g_prime - p_prime * f_diff) * M_ori;
 
             // 更新相场
             _phi[_INDEX(i, j)] = oldPhi + dPhiDt * _dt;

@@ -32,7 +32,9 @@ void Kobayashi::_initParams() {
     // 用于各向异性系数的基础值：ε(θ) = ε̄(1 + δcos(nθ))
     _epsilonBar = 0.010f;
 
-    M_ori = 1/_tau;           // 界面迁移率系数
+    // 恒相位移动系数 M_η，控制相场演化速度（单位：无量纲）
+    // 物理意义：M_η = 1/τ，τ 为弛豫时间，M_η 越大相变越快
+    M_eta = 1/_tau;
 
     // 潜热系数 K，控制温度场对相变的影响（单位：无量纲）
     // 物理意义：相变释放的潜热量，影响周围温度场
@@ -73,7 +75,7 @@ void Kobayashi::_initParams() {
 
     // 取向场迁移率 M_ori，控制取向场演化的速度
     // 物理意义：值越大，取向场调整越快
-    _M_ori = 1.0f;
+    M_ori = 1.0f;
 }
 
 // 分配内存并重置模拟状态
@@ -262,6 +264,7 @@ void Kobayashi::_evolution()
             // 这是一个非线性偏微分方程，描述相场随时间的变化
             // 新公式：∂η/∂t = M_η[∇·(ε²∇η) - ∂/∂x(ε·∂ε/∂θ·∂η/∂y) + ∂/∂y(ε·∂ε/∂θ·∂η/∂x) - g'(η) - p'(η)(f_s - f_l + f_ori)]
             // 其中：
+            //   - M_η：恒相位移动系数，控制相场演化速度
             //   - ε²∇²η：各向异性界面能的扩散项
             //   - term1, term2, term3：各向异性系数的贡献
             //   - g'(η) = η(η-1)(η-0.5)：双势阱势能的导数
@@ -282,7 +285,7 @@ void Kobayashi::_evolution()
 
             // 先计算 ∂η/∂t
             float dPhiDt = (term1 + term2 + _epsilon[_INDEX(i, j)] * _epsilon[_INDEX(i, j)] * _lapPhi[_INDEX(i, j)] + term3
-                    - g_prime - p_prime * f_diff) * M_ori;
+                    - g_prime - p_prime * f_diff) * M_eta;
 
             // 更新相场
             _phi[_INDEX(i, j)] = oldPhi + dPhiDt * _dt;
@@ -334,7 +337,7 @@ void Kobayashi::_evolution()
                     - 12.0f * oldThetaOri) / (3.0f * _dx * _dx);
 
                 // 计算 ∂θ_ori/∂t
-                dThetaOriDt = -_M_ori * _H * (1.0f - p_eta) * p_eta * lapThetaOri / gradThetaOriMag;
+                dThetaOriDt = -M_ori * _H * (1.0f - p_eta) * p_eta * lapThetaOri / gradThetaOriMag;
             }
 
             // 更新取向场

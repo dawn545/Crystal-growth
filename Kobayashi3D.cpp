@@ -94,15 +94,13 @@ Kobayashi::Kobayashi(int x, int y, int z, float timeStep) {
     _dy = 0.03f; // y 方向空间步长
     _dz = 0.03f; // z 方向空间步长
     _dt = timeStep; // 时间步长：每次模拟迭代推进的时间量
-    _renderSlice = z / 2; // 默认渲染中间切片
 
     _initParams();  // 初始化物理参数
     _vectorInit();  // 分配内存并设置初始条件
 }
 
 Kobayashi::~Kobayashi() {
-    // 析构函数：程序退出时清理显存中的纹理资源
-    if (_textureID) glDeleteTextures(1, &_textureID);
+    // 析构函数
 }
 
 // 初始化 Kobayashi 晶体生长模型的物理常数
@@ -113,10 +111,6 @@ void Kobayashi::_initParams() {
     // 物理意义：越小相变越快，晶体生长越迅速
     _tau = 0.0003f;
 
-    // 平均各向异性强度 ε̄，决定晶界厚度（单位：无量纲）
-    // 用于各向异性系数的基础值：ε(θ) = ε̄(1 + δcos(nθ))
-    _epsilonBar = 0.010f;
-
     // 恒相位移动系数 M_η，控制相场演化速度（单位：无量纲）
     // 物理意义：M_η = 1/τ，τ 为弛豫时间，M_η 越大相变越快
     M_eta = 1/_tau;
@@ -124,19 +118,6 @@ void Kobayashi::_initParams() {
     // 潜热系数 K，控制温度场对相变的影响（单位：无量纲）
     // 物理意义：相变释放的潜热量，影响周围温度场
     _K = 1.6f;
-
-    // 各向异性强度 δ，值越大晶体越有棱角（范围：0.0-1.0）
-    // 公式中的 δ 参数，控制各向异性的幅度
-    _delta = 0.05f;
-
-    // 折叠对称性参数 j_fold，决定晶体的对称性阶数
-    // 物理意义：晶体在旋转 2π/j_fold 角度后会重复自身的形状
-    // 常用值：
-    //   j_fold = 4.0 → 四重对称（正方形晶体，如某些金属）
-    //   j_fold = 6.0 → 六重对称（六角形晶体，如雪花、石墨）
-    //   j_fold = 8.0 → 八重对称（八角形晶体）
-    // 在各向异性系数公式中：ε(θ) = ε̄(1 + δ·cos(j_fold·(θ₀ - θ)))
-    j_fold = 6.0f;
 
     // 过冷度系数 α，用于计算驱动力（单位：无量纲）
     // 在 m = (α/π)arctan(γ(T_eq - T)) 中使用
@@ -220,14 +201,8 @@ void Kobayashi::_vectorInit() {
     // 取向场梯度模
     _gradOmegaOriMag.assign(vSize, 0.0f);
 
-    // 像素缓冲区：用于渲染切片，每个像素4个字节 (R,G,B,A)
-    _pixelBuffer.assign(_objectCount.x * _objectCount.y * 4, 0);
-
     // 在中心创建一个初始晶核
     _createNucleus(_objectCount.x / 2, _objectCount.y / 2, _objectCount.z / 2);
-
-    // 立即更新一次纹理，确保初始画面不是黑的
-    _updateTexture();
 }
 
 // ==========================================
@@ -765,7 +740,6 @@ void Kobayashi::update() {
         _computeGradientLaplacian();
         _evolution();
     }
-    _updateTexture(); // 计算完后，准备将数据传给显卡
 }
 
 void Kobayashi::reset() {
@@ -791,13 +765,6 @@ void Kobayashi::glInit() {
 
     // 设置背景颜色为深灰色
     glClearColor(0.1f, 0.1f, 0.15f, 1.0f);
-}
-
-// 更新纹理（3D版本 - 实际上不需要纹理，这里保留接口）
-void Kobayashi::_updateTexture()
-{
-    // 3D渲染不需要预先生成纹理
-    // 直接在 glRender() 中绘制体素
 }
 
 // 3D渲染函数 - 使用点云渲染晶体

@@ -201,6 +201,12 @@ void Kobayashi::_vectorInit() {
     // 取向场梯度模
     _gradOmegaOriMag.assign(vSize, 0.0f);
 
+    // 存储 ∂η/∂t
+    _dPhiDt.assign(vSize, 0.0f);
+
+    // 固定方向场标记（默认都不固定）
+    _isOrientationFixed.assign(vSize, false);
+
     // 在中心创建一个初始晶核
     _createNucleus(_objectCount.x / 2, _objectCount.y / 2, _objectCount.z / 2);
 }
@@ -508,19 +514,12 @@ void Kobayashi::_computeGradientLaplacian()
 }
 
 // ==========================================
-// 物理模拟核心：时间演化 - 3D版本
+// 物理模拟核心：按论文Algorithm 2分离求解
 // ==========================================
 
-// 根据微分方程更新 _phi, _t, _theta_ori, _phi_ori 的值
-// 实现公式(17)和(18)
-// 参考：Kobayashi, A. (1993) "Modeling and numerical simulations of dendritic crystal growth"
-// ==========================================
-// 物理模拟核心：时间演化 - 3D版本
-// ==========================================
-
-// 根据微分方程更新 _phi, _t, _theta_ori, _phi_ori 的值
-// 实现公式(17)和(18)
-void Kobayashi::_evolution()
+// 解相场方程(17)，计算并存储 ∂η/∂t
+// 公式(17)：∂η/∂t = M_η[∇·(ε²∇η) + ∂/∂z(...) + ∂/∂y(...) - ∂/∂z(ε·∂ε/∂θ·τ) - g'(η) - p'(η)(f_s - f_t + f_ori)]
+void Kobayashi::_solvePhaseField()
 {
     for (int k = 0; k < _objectCount.z; k++)
     {
@@ -656,23 +655,45 @@ void Kobayashi::_evolution()
                 // f_t = 0 (液相自由能), f_s = -m/6 (固相自由能), f_ori = H·||∇Ω_ori||
                 float f_diff = -m / 6.0f + _H * gradOmegaOriMag;
 
-                // 计算 ∂η/∂t
-                float dPhiDt = M_eta * (term_diffusion + term_grad_eps2 + term_z + term_y + term_eps_tau
+                // 计算 ∂η/∂t 并存储，不更新 _phi
+                _dPhiDt[idx] = M_eta * (term_diffusion + term_grad_eps2 + term_z + term_y + term_eps_tau
                                       - g_prime - p_prime * f_diff);
+            }
+        }
+    }
+}
 
-                // 更新相场，并限制在 [0, 1] 范围内
-                _phi[idx] = fmax(0.0f, fmin(1.0f, oldPhi + dPhiDt * _dt));
+// 解取向场方程(18)
+// 公式(18)：∂Ω_ori/∂t = -M_ori·H·(1-p(η))·∇·[p(η)·∇Ω_ori/||∇Ω_ori||]
+// 只在非固定方向的位置更新
+void Kobayashi::_solveOrientationField()
+{
+    for (int k = 0; k < _objectCount.z; k++)
+    {
+        for (int j = 0; j < _objectCount.y; j++)
+        {
+            for (int i = 0; i < _objectCount.x; i++)
+            {
+                int idx = _INDEX(i, j, k);
 
-                // ========== 热传导方程 + 潜热释放 ==========
-                // ∂T/∂t = a²·∇²T + K·∂η/∂t
-                _t[idx] = oldT + (_alpha_T * _lapT[idx] + _K * dPhiDt) * _dt;
+                // 跳过固定方向的位置
+                if (_isOrientationFixed[idx]) continue;
 
-                // ========== 公式(18)：取向场演化方程 ==========
-                // ∂Ω_ori/∂t = -M_ori·H·(1-p(η))·∇·[p(η)·∇Ω_ori/||∇Ω_ori||]
-                // Ω_ori 用单位向量 (x, y, z) 表示
-                // 这个方程需要在切空间中计算
+                // 周期性边界条件
+                int i_plus = (i + 1) % _objectCount.x;
+                int i_minus = ((i - 1) + _objectCount.x) % _objectCount.x;
+                int j_plus = (j + 1) % _objectCount.y;
+                int j_minus = ((j - 1) + _objectCount.y) % _objectCount.y;
+                int k_plus = (k + 1) % _objectCount.z;
+                int k_minus = ((k - 1) + _objectCount.z) % _objectCount.z;
+
+                float oldPhi = _phi[idx];
+                float oldOmegaX = _omega_ori_x[idx];
+                float oldOmegaY = _omega_ori_y[idx];
+                float oldOmegaZ = _omega_ori_z[idx];
 
                 float p_eta = oldPhi * oldPhi * (3.0f - 2.0f * oldPhi);
+                float gradOmegaOriMag = _gradOmegaOriMag[idx];
 
                 // 计算取向场的拉普拉斯算子（对每个分量）
                 float lapOmegaX = (_omega_ori_x[_INDEX(i_plus, j, k)] + _omega_ori_x[_INDEX(i_minus, j, k)]
@@ -691,7 +712,6 @@ void Kobayashi::_evolution()
                                  - 6.0f * oldOmegaZ) / (_dx * _dx);
 
                 // 投影到切空间：去除法向分量
-                // 切空间拉普拉斯 = 拉普拉斯 - (拉普拉斯·ω)ω
                 float lap_dot_omega = lapOmegaX * oldOmegaX + lapOmegaY * oldOmegaY + lapOmegaZ * oldOmegaZ;
                 float lapOmegaX_tangent = lapOmegaX - lap_dot_omega * oldOmegaX;
                 float lapOmegaY_tangent = lapOmegaY - lap_dot_omega * oldOmegaY;
@@ -731,14 +751,66 @@ void Kobayashi::_evolution()
     }
 }
 
-// 主更新循环
+// 解温度方程(5)
+// 公式(5)：∂T/∂t = a²·∇²T + K·∂η/∂t
+// 使用存储的 ∂η/∂t
+void Kobayashi::_solveTemperatureField()
+{
+    for (int k = 0; k < _objectCount.z; k++)
+    {
+        for (int j = 0; j < _objectCount.y; j++)
+        {
+            for (int i = 0; i < _objectCount.x; i++)
+            {
+                int idx = _INDEX(i, j, k);
+                float oldT = _t[idx];
+
+                // ∂T/∂t = a²·∇²T + K·∂η/∂t
+                _t[idx] = oldT + (_alpha_T * _lapT[idx] + _K * _dPhiDt[idx]) * _dt;
+            }
+        }
+    }
+}
+
+// 更新相场（使用存储的 ∂η/∂t）
+void Kobayashi::_updatePhaseField()
+{
+    for (int k = 0; k < _objectCount.z; k++)
+    {
+        for (int j = 0; j < _objectCount.y; j++)
+        {
+            for (int i = 0; i < _objectCount.x; i++)
+            {
+                int idx = _INDEX(i, j, k);
+                float oldPhi = _phi[idx];
+
+                // 更新相场，并限制在 [0, 1] 范围内
+                _phi[idx] = fmax(0.0f, fmin(1.0f, oldPhi + _dPhiDt[idx] * _dt));
+            }
+        }
+    }
+}
+
+// 主更新循环 - 按Algorithm 2实现
 void Kobayashi::update() {
     if (!_updateFlag) return; // 如果暂停则不计算
 
     // 为了加快视觉效果，每一帧渲染前，我们计算 10 次物理步骤
     for (int i = 0; i < 10; i++) {
+        // Step 1: 计算梯度和拉普拉斯算子
         _computeGradientLaplacian();
-        _evolution();
+
+        // Step 2: 解相场方程(17)，存储 ∂η/∂t
+        _solvePhaseField();
+
+        // Step 3: 解取向场方程(18)（只在非固定方向的位置）
+        _solveOrientationField();
+
+        // Step 4: 解温度方程(5)
+        _solveTemperatureField();
+
+        // Step 5: 更新相场
+        _updatePhaseField();
     }
 }
 

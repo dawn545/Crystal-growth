@@ -32,7 +32,7 @@ private:
     inline int _INDEX(int i, int j, int k) { return (i + _objectCount.x * (j + _objectCount.y * k)); };
 
     float _dx, _dy, _dz, _dt;
-    float _tau, _epsilonBar, M_eta, _K, _delta, j_fold, _alpha, _gamma, _tEq;
+    float _tau, M_eta, _K, _alpha, _gamma, _tEq;
     float _alpha_T; // 热扩散系数 a² (thermal diffusivity)
     float _H; // 取向场驱动力系数
     float M_ori; // 取向场迁移率
@@ -66,16 +66,12 @@ private:
     // 取向场梯度：∇Ω_ori（使用 (ρ, λ) 计算）
     std::vector<float> _gradOmegaOriMag; // ||∇Ω_ori||
 
-    // OpenGL 纹理（显示中间切片）
-    std::vector<unsigned char> _pixelBuffer;
-    GLuint _textureID = 0;
+    // OpenGL 相关
     bool _updateFlag = true;
-    int _renderSlice; // 渲染哪个z切片
 
     void _initParams();
     void _vectorInit();
     void _createNucleus(int x, int y, int z);
     void _computeGradientLaplacian();
     void _evolution();
-    void _updateTexture();
 };

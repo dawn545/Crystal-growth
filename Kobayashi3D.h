@@ -40,6 +40,10 @@ private:
 
     // 相场、温度场
     std::vector<float> _phi, _t;
+    std::vector<float> _dPhiDt; // 存储 ∂η/∂t，用于温度方程
+
+    // 固定方向场标记
+    std::vector<bool> _isOrientationFixed;
 
     // 相场梯度和拉普拉斯算子
     std::vector<float> _gradPhiX, _gradPhiY, _gradPhiZ;
@@ -73,5 +77,8 @@ private:
     void _vectorInit();
     void _createNucleus(int x, int y, int z);
     void _computeGradientLaplacian();
-    void _evolution();
+    void _solvePhaseField();       // 解相场方程(17)，存储 ∂η/∂t
+    void _solveOrientationField(); // 解取向场方程(18)
+    void _solveTemperatureField(); // 解温度方程(5)
+    void _updatePhaseField();      // 更新相场
 };

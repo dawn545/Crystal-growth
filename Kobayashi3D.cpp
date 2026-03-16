@@ -2,6 +2,26 @@
 #include <cfloat> // 包含 FLT_EPSILON，用于浮点数比较，防止除以零
 
 // ==========================================
+// 角度处理辅助函数
+// ==========================================
+
+// 计算两个角度的差分，处理2π周期性
+// 返回值在 [-π, π] 范围内
+inline float angleDifference(float angle_plus, float angle_minus) {
+    float diff = angle_plus - angle_minus;
+
+    // 将差分规范化到 [-π, π] 范围
+    while (diff > PI_F) {
+        diff -= 2.0f * PI_F;
+    }
+    while (diff < -PI_F) {
+        diff += 2.0f * PI_F;
+    }
+
+    return diff;
+}
+
+// ==========================================
 // Rodrigues旋转公式辅助函数
 // ==========================================
 
@@ -438,13 +458,15 @@ void Kobayashi::_computeGradientLaplacian()
                 // 计算 ∇Ω_ori 的模
                 // 使用 (ρ, λ) 场的梯度来近似
                 // ||∇Ω_ori|| ≈ sqrt((∂ρ/∂x)² + (∂ρ/∂y)² + (∂ρ/∂z)² + (∂λ/∂x)² + (∂λ/∂y)² + (∂λ/∂z)²)
+                // 注意：ρ 是中心角，范围 [0, π]，不需要特殊处理
                 float grad_rho_x = (_rho_x_plus[idx] - _rho_x_minus[idx]) / (2.0f * _dx);
                 float grad_rho_y = (_rho_y_plus[idx] - _rho_y_minus[idx]) / (2.0f * _dy);
                 float grad_rho_z = (_rho_z_plus[idx] - _rho_z_minus[idx]) / (2.0f * _dz);
 
-                float grad_lambda_x = (_lambda_x_plus[idx] - _lambda_x_minus[idx]) / (2.0f * _dx);
-                float grad_lambda_y = (_lambda_y_plus[idx] - _lambda_y_minus[idx]) / (2.0f * _dy);
-                float grad_lambda_z = (_lambda_z_plus[idx] - _lambda_z_minus[idx]) / (2.0f * _dz);
+                // λ 是极坐标角度，范围 [0, 2π]，需要处理周期性
+                float grad_lambda_x = angleDifference(_lambda_x_plus[idx], _lambda_x_minus[idx]) / (2.0f * _dx);
+                float grad_lambda_y = angleDifference(_lambda_y_plus[idx], _lambda_y_minus[idx]) / (2.0f * _dy);
+                float grad_lambda_z = angleDifference(_lambda_z_plus[idx], _lambda_z_minus[idx]) / (2.0f * _dz);
 
                 _gradOmegaOriMag[idx] = sqrt(grad_rho_x * grad_rho_x + grad_rho_y * grad_rho_y + grad_rho_z * grad_rho_z
                                            + grad_lambda_x * grad_lambda_x + grad_lambda_y * grad_lambda_y + grad_lambda_z * grad_lambda_z);

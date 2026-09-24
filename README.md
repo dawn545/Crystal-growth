@@ -16,8 +16,9 @@ crystal.exe is 3d version
 Kim, Y., & Lin, S. (2003). Visual Simulation of Ice Crystal Growth. Eurographics/SIGGRAPH Symposium on Computer Animation.
 
 ## Runtime effect
-
+<img width="1074" height="1105" alt="屏幕截图 2026-02-28 175208" src="https://github.com/user-attachments/assets/d2c17ca3-a653-4713-b939-00327da0b5a4" />
 <img width="561" height="496" alt="屏幕截图 2026-03-15 015233" src="https://github.com/user-attachments/assets/b6d753ce-d4d9-4848-8c40-2ee0e3b96edd" />
+<img width="601" height="555" alt="屏幕截图 2026-02-26 181034" src="https://github.com/user-attachments/assets/7c77b66a-5548-46de-aaaa-6f30b5becfc4" />
 
 ## Compilation Command
 

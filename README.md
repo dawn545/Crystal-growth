@@ -15,9 +15,14 @@ crystal.exe is 3d version
 ## Reference
 Kim, Y., & Lin, S. (2003). Visual Simulation of Ice Crystal Growth. Eurographics/SIGGRAPH Symposium on Computer Animation.
 
+## Runtime effect
+
+<img width="561" height="496" alt="屏幕截图 2026-03-15 015233" src="https://github.com/user-attachments/assets/b6d753ce-d4d9-4848-8c40-2ee0e3b96edd" />
+
 ## Compilation Command
 
 To compile the project, use the following command:
 
 ```bash
 g++ main.cpp Kobayashi.cpp -I. -lopengl32 -lfreeglut -o main.exe
+```bash
